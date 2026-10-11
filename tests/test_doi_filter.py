@@ -1,0 +1,120 @@
+"""Tests for the rules in doi_filter.py - no Outlook needed.
+
+Run from the repo folder:  python -m unittest -v
+"""
+import unittest
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
+from unittest import mock
+
+import doi_filter
+from doi_filter import Mail, extract, important_attachments, qualify
+
+# Pin the settings so a real local_settings.py on your laptop can't change test results.
+TEST_SETTINGS = {
+    "SENDER_DOMAINS": {"example.test"},
+    "MUST_BE_SENT_TO": {"audit@example.test"},
+}
+
+
+def good_mail(**overrides):
+    m = Mail(
+        subject="DOI-TEST-60 Request - Claims Handling",
+        body="Please provide the documents listed in the attached request.",
+        sender="examiner@example.test",
+        to=["audit@example.test"],
+        attachments=["image001.png", "DOI-TEST-60 Request Letter.pdf"],
+        received=datetime(2027, 10, 4, 9, 30),
+        entry_id="00000000FAKEENTRYID60",
+        sender_name="Jordan Lee",
+    )
+    for k, v in overrides.items():
+        setattr(m, k, v)
+    return m
+
+
+class QualifyTests(unittest.TestCase):
+    def setUp(self):
+        patcher = mock.patch.multiple(doi_filter, **TEST_SETTINGS)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def test_good_mail_passes_and_returns_request_id(self):
+        self.assertEqual(qualify(good_mail()), (True, "DOI-TEST-60"))
+
+    def test_reply_subject_still_finds_id(self):
+        self.assertEqual(qualify(good_mail(subject="RE: DOI-TEST-60 Request"))[1], "DOI-TEST-60")
+
+    def test_each_rule_rejects_with_its_own_reason(self):
+        cases = {
+            "subject has no request ID": dict(subject="Quarterly update"),
+            "sender domain not allowed": dict(sender="someone@other.test"),
+            "not addressed to the audit mailbox": dict(to=["someone@example.test"]),
+            "body lacks request wording": dict(body="FYI only."),
+            "no attachment named": dict(attachments=["image001.png", "notes.pdf"]),
+        }
+        for reason, change in cases.items():
+            with self.subTest(reason=reason):
+                ok, why = qualify(good_mail(**change))
+                self.assertFalse(ok)
+                self.assertIn(reason, why)
+
+    def test_cc_counts_as_addressed(self):
+        self.assertTrue(qualify(good_mail(to=[], cc=["audit@example.test"]))[0])
+
+    def test_lowercase_id_is_not_a_request_id(self):
+        self.assertFalse(qualify(good_mail(subject="doi-test-60 request"))[0])
+
+
+class AttachmentTests(unittest.TestCase):
+    def test_name_matching_ignores_case_spaces_hyphens_underscores(self):
+        names = ["follow up letter.pdf", "FOLLOWUP.docx", "doi_items.xlsx", "Data_Request.pdf"]
+        self.assertEqual(important_attachments(names), names)
+
+    def test_images_ignored_even_if_named_right(self):
+        self.assertEqual(important_attachments(["DOI logo.PNG", "request.jpeg"]), [])
+
+    def test_unrelated_names_ignored(self):
+        self.assertEqual(important_attachments(["minutes.pdf", "budget.xlsx"]), [])
+
+
+class ExtractTests(unittest.TestCase):
+    """extract() with fake objects shaped like Outlook's COM items."""
+
+    def fake_msg(self):
+        def person(addr, kind=None):
+            p = SimpleNamespace(Address=addr, Type=kind,
+                                PropertyAccessor=SimpleNamespace(GetProperty=lambda prop: addr.upper()))
+            return p
+        return SimpleNamespace(
+            Subject="DOI-TEST-61 Request", Body="please provide",
+            Sender=person("examiner@example.test"), SenderEmailAddress="x", SenderName="Jordan Lee",
+            Recipients=[person("audit@example.test", 1), person("cc@example.test", 2),
+                        person("hidden@example.test", 3)],
+            Attachments=[SimpleNamespace(FileName="DOI-TEST-61.pdf")],
+            # pywin32 returns a timezone-tagged value like this one
+            ReceivedTime=datetime(2027, 10, 5, 14, 5, tzinfo=timezone(timedelta(0))),
+            EntryID="FAKEID61",
+        )
+
+    def test_fields(self):
+        m = extract(self.fake_msg())
+        self.assertEqual(m.sender, "examiner@example.test")      # lower-cased SMTP
+        self.assertEqual(m.to, ["audit@example.test"])
+        self.assertEqual(m.cc, ["cc@example.test"])               # BCC left out
+        self.assertEqual(m.sender_name, "Jordan Lee")
+        self.assertEqual(m.attachments, ["DOI-TEST-61.pdf"])
+
+    def test_received_time_is_naive_for_openpyxl(self):
+        m = extract(self.fake_msg())
+        self.assertIsNone(m.received.tzinfo)
+        self.assertEqual(m.received, datetime(2027, 10, 5, 14, 5))
+
+    def test_smtp_falls_back_to_address(self):
+        msg = self.fake_msg()
+        msg.Sender = SimpleNamespace(Address="Fallback@Example.test")    # no PropertyAccessor
+        self.assertEqual(extract(msg).sender, "fallback@example.test")
+
+
+if __name__ == "__main__":
+    unittest.main()

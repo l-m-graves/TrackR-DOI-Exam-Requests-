@@ -1,0 +1,11 @@
+# Real settings and real data never leave the laptop
+local_settings.py
+*.xlsx
+~$*
+backups/
+*.csv
+*.msg
+
+__pycache__/
+*.pyc
+.venv/

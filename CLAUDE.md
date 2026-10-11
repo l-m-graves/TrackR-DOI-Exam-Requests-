@@ -18,9 +18,11 @@ A Python tool that reads Department of Insurance (DOI) exam-request emails from 
 | File | Role |
 |---|---|
 | `DOI_Exam_Test_Tracker_v2.xlsx` | The tracker (target of all writes) |
-| `doi_filter.py` | Outlook fetch + qualification rules (exists) |
-| `upsert_tracker.py` | Write/update tracker rows (planned) |
-| `run.py` | Entry point: fetch → qualify → upsert → log (planned) |
+| `doi_filter.py` | Outlook fetch + qualification rules; settings block holds placeholders only |
+| `local_settings.py` | Real paths/addresses, overrides `doi_filter` settings. **Git-ignored**; template in `local_settings.example.py` |
+| `upsert_tracker.py` | Write/update tracker rows |
+| `run.py` | Entry point: fetch → qualify → upsert → CSV log (`--days N`, `--dry-run`) |
+| `tests/` | `python -m unittest -v`. Upsert tests need a fake-data tracker at `tests/fixtures/DOI_Exam_Test_Tracker_v2.xlsx` or `$DOI_TRACKER_FIXTURE`; skipped otherwise. `*.xlsx` is git-ignored — don't commit workbooks |
 
 ## Architecture
 
@@ -78,12 +80,15 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 - **Sheet Summary**: settings `C5` AsOf (`=TODAY()`), `C6` FollowUpDays, `C7` DueSoonDays; KPIs and breakdowns via named ranges (`trkStatus`, `trkDue`, `trkRequest`, … all rows 4:1000).
 - **Sheet Lists**: dropdown sources via dynamic names `StatusList` (A4↓) and `AssigneeList` (D4↓).
 
-## Upsert logic (planned)
+## Upsert logic (`upsert_tracker.py`)
 
-- Key = Request ID from subject regex. Existing ID → update C/L/M, append to O. New ID → append row.
-- Must be idempotent: running twice produces no duplicates.
-- Backup the workbook (timestamped copy) before every write.
-- openpyxl requires Excel closed; xlwings works with it open. Default: openpyxl, refuse to run if the file is locked.
+- Key = Request ID from subject regex, matched against the first word of column D (same rule as column A's formula). New ID → append row under `tblRequests`: formulas translated down from the row above, styles copied, `tbl.ref` + autoFilter extended. D gets RE:/FW: stripped and the ID forced to be the first word.
+- Existing ID → C keeps the **earliest** received date; L filled only if blank (never overwrites typed contacts); O gets one appended line per email ending `[ref xxxxxxxx]` (first 8 hex of SHA-1 of EntryID).
+- Idempotent via that ref tag: an email whose ref is already in O is skipped. Nothing changed → no backup, no save.
+- Timestamped backup to `backups/` next to the tracker before every save.
+- openpyxl requires Excel closed: refuses if `~$<name>` exists or the file can't be opened r+b. Also refuses if the file has charts/images/slicers (openpyxl would delete them).
+- Not yet done: M (Last Email Sent, needs Sent Items lookup by `ConversationID`) and G (Due Date parsing). Neither is written by the script yet.
+- `extract()` strips pywin32's timezone tag from `ReceivedTime` — openpyxl rejects tz-aware datetimes.
 
 ## Workbook conventions (if regenerating/editing)
 
