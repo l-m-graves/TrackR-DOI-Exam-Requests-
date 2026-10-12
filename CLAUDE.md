@@ -24,7 +24,7 @@ A Python tool that reads Department of Insurance (DOI) exam-request emails from 
 | `upsert_tracker.py` | Write/update tracker rows |
 | `publish.py` | Publishes a view-only, Excel-recalculated copy to `PUBLISH_PATH` for coworkers |
 | `import_original.py` | One-time: rebuild the original request list (sheet `Requests`) in the tracker template's format → new file + `_import_log.csv`. Run locally on real data |
-| `run.py` | Entry point: fetch → qualify → upsert → publish → CSV log (`--days N`, `--dry-run`) |
+| `run.py` | Entry point: fetch (+ save attachments) → qualify → upsert → publish → CSV log (`--days N`, `--dry-run`). `write_log()` creates the CSV + folder on first use; if the log is locked (open in Excel) it writes a dated fallback CSV instead of losing the run |
 | `tests/` | `python -m unittest -v`. Upsert tests need a fake-data tracker at `tests/fixtures/DOI_Exam_Test_Tracker_v2.xlsx` or `$DOI_TRACKER_FIXTURE`; skipped otherwise. `*.xlsx` is git-ignored — don't commit workbooks |
 
 ## Architecture
@@ -43,7 +43,7 @@ Outlook (COM) ──Restrict()──> extract() ──> Mail dataclass ──> q
 An email qualifies only if **all** pass:
 1. Subject contains a Request ID matching `REQUEST_ID_PATTERN` = `\b(?:FIN|IT|DOI-[A-Z]+)-\d+\b` — real IDs are `FIN-##` and `IT-##`; `DOI-TEST-##` is test data only. A new prefix must be added to **both** `REQUEST_ID_PATTERN` and `SUBJECT_LIKES` (the Outlook DASL pre-filter, OR'd by `subject_filter()`), or those emails never reach Python
 2. Sender domain in `SENDER_DOMAINS` (placeholder — user fills in the real DOI domain)
-3. `MUST_BE_SENT_TO` appears on To or CC
+3. *Optional:* `MUST_BE_SENT_TO` appears on To or CC — **default empty = rule skipped**, because the To line moves between the examiner and the assigned contact as a request progresses
 4. Body contains one of `BODY_PHRASES`
 5. At least one attachment whose **file name** contains `DOI`, `Request`, or `Follow-up` — matched case/space/hyphen/underscore-insensitive via `_norm()`; image extensions (`.png .gif .jpg .jpeg`) ignored. Matching is on file name, not document contents.
 
@@ -54,7 +54,7 @@ An email qualifies only if **all** pass:
 - Internal Exchange addresses come back as X500 strings. Use `PropertyAccessor.GetProperty(PR_SMTP_ADDRESS)` with fallback to `.Address` (see `smtp_address()`).
 - `Recipients[i].Type`: 1 = To, 2 = CC, 3 = BCC.
 - `msg.EntryID` is the stable item ID — use as secondary dedupe key.
-- Attachments: `.FileName`, `.SaveAsFile(path)`. Save only `important_attachments()` to `ATTACH_DIR` as `{RequestID}_{FileName}`.
+- Attachments: `.FileName`, `.Item(i)` (1-based), `.SaveAsFile(path)`. With `ATTACH_DIR` set, `fetch_candidates()` saves qualifying emails' `important_attachments()` to `ATTACH_DIR\<RequestID>\<YYYY-MM-DD>_<FileName>` (date prefix keeps revised same-name files apart; existing files skipped = idempotent; Windows-invalid chars → `_`). `attachment_targets()` is the pure, tested plan; `save_attachments()` is the COM part. Each result is logged as `attachment`. `--dry-run` saves nothing.
 
 ## Tracker workbook structure
 

@@ -2,7 +2,7 @@
 
     python run.py                 # last 14 days, writes the tracker
     python run.py --days 30       # look further back
-    python run.py --dry-run       # show what would change, write nothing
+    python run.py --dry-run       # show what would change, write/save nothing
 """
 import argparse
 import csv
@@ -18,8 +18,21 @@ LOG_FIELDS = ["run_at", "received", "ref", "sender", "subject", "result", "detai
 
 def write_log(path, rows):
     """Append to a CSV audit log: every email looked at, why it was accepted or rejected,
-    and what happened to the tracker."""
+    and what happened to the tracker. Creates the file (and folder) on first use. If the log
+    is open in Excel (locked), writes a dated file next to it instead of losing the entries."""
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        _append_csv(path, rows)
+        return path
+    except PermissionError:
+        fallback = path.with_name(f"{path.stem}_{datetime.now():%Y%m%d_%H%M%S}{path.suffix}")
+        _append_csv(fallback, rows)
+        print(f"Log {path.name} is open/locked - this run was logged to {fallback.name} instead.")
+        return fallback
+
+
+def _append_csv(path, rows):
     new = not path.exists()
     with open(path, "a", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=LOG_FIELDS)
@@ -41,7 +54,9 @@ def main():
     args = ap.parse_args()
 
     run_at = datetime.now()
-    accepted, rejected = doi_filter.fetch_candidates(since=run_at - timedelta(days=args.days))
+    attach_dir = None if args.dry_run else doi_filter.ATTACH_DIR     # dry run saves nothing
+    accepted, rejected = doi_filter.fetch_candidates(since=run_at - timedelta(days=args.days),
+                                                     attach_dir=attach_dir)
     print(f"{len(accepted)} qualified, {len(rejected)} rejected")
 
     log = [log_row(run_at, m, "rejected", reason) for m, reason in rejected]
@@ -54,6 +69,10 @@ def main():
     for a in actions:
         print(f"  {a['action']:9} {a['request_id']:<16} row {a['row']:<4} {a['changes']}")
         log.append(log_row(run_at, a["mail"], a["action"], f"row {a['row']}: {a['changes']}"))
+    for m, rid in accepted:                         # attachments are evidence - log each one
+        for result in m.saved:
+            print(f"  attachment {rid:<15} {result}")
+            log.append(log_row(run_at, m, "attachment", result))
     for m, reason in rejected:
         print(f"  rejected  {m.subject[:60]!r}: {reason}")
 

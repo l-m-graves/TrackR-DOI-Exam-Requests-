@@ -2,13 +2,17 @@
 
 Run from the repo folder:  python -m unittest -v
 """
+import shutil
+import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
 import doi_filter
-from doi_filter import Mail, extract, important_attachments, qualify, subject_filter
+from doi_filter import (Mail, attachment_targets, extract, important_attachments, qualify,
+                        save_attachments, subject_filter)
 
 # Pin the settings so a real local_settings.py on your laptop can't change test results.
 TEST_SETTINGS = {
@@ -49,7 +53,7 @@ class QualifyTests(unittest.TestCase):
         cases = {
             "subject has no request ID": dict(subject="Quarterly update"),
             "sender domain not allowed": dict(sender="someone@other.test"),
-            "not addressed to the audit mailbox": dict(to=["someone@example.test"]),
+            "not addressed to MUST_BE_SENT_TO": dict(to=["someone@example.test"]),
             "body lacks request wording": dict(body="FYI only."),
             "no attachment named": dict(attachments=["image001.png", "notes.pdf"]),
         }
@@ -58,6 +62,10 @@ class QualifyTests(unittest.TestCase):
                 ok, why = qualify(good_mail(**change))
                 self.assertFalse(ok)
                 self.assertIn(reason, why)
+
+    def test_recipient_rule_skipped_when_setting_is_empty(self):
+        with mock.patch.object(doi_filter, "MUST_BE_SENT_TO", set()):
+            self.assertTrue(qualify(good_mail(to=["assigned.contact@example.test"], cc=[]))[0])
 
     def test_cc_counts_as_addressed(self):
         self.assertTrue(qualify(good_mail(to=[], cc=["audit@example.test"]))[0])
@@ -95,6 +103,58 @@ class AttachmentTests(unittest.TestCase):
 
     def test_unrelated_names_ignored(self):
         self.assertEqual(important_attachments(["minutes.pdf", "budget.xlsx"]), [])
+
+
+class AttachmentSaveTests(unittest.TestCase):
+    NAMES = ["image001.png", "FIN-53 Request Letter.pdf", "notes.docx", "Follow-up: items?.xlsx"]
+    DAY = datetime(2027, 10, 8, 9, 30)
+
+    def setUp(self):
+        self.dir = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.dir)
+
+    def fake_msg(self, fail_on=()):
+        written = []
+        def item(i):
+            def save(path):
+                if i in fail_on:
+                    raise OSError("blocked by policy")
+                Path(path).write_text(f"attachment {i}")
+                written.append(i)
+            return SimpleNamespace(SaveAsFile=save)
+        return SimpleNamespace(Attachments=SimpleNamespace(Item=item)), written
+
+    def test_plan_keeps_request_files_only_with_outlook_numbering(self):
+        plan = attachment_targets("FIN-53", self.NAMES, self.DAY, self.dir)
+        self.assertEqual([i for i, _ in plan], [2, 4])                  # 1-based, image + notes skipped
+        self.assertEqual([d.relative_to(self.dir).as_posix() for _, d in plan],
+                         ["FIN-53/2027-10-08_FIN-53 Request Letter.pdf",
+                          "FIN-53/2027-10-08_Follow-up_ items_.xlsx"])   # ':' and '?' made safe
+
+    def test_save_then_rerun_saves_nothing_new(self):
+        m = Mail("FIN-53 Request", "", "x@example.test", attachments=self.NAMES, received=self.DAY)
+        msg, written = self.fake_msg()
+        first = save_attachments(msg, m, "FIN-53", self.dir)
+        self.assertEqual(written, [2, 4])
+        self.assertTrue(all(r.startswith("saved ") for r in first))
+        self.assertEqual(save_attachments(msg, m, "FIN-53", self.dir), [])   # already there
+        self.assertEqual(written, [2, 4])
+
+    def test_same_name_on_a_later_email_is_kept_separately(self):
+        m1 = Mail("FIN-53", "", "", attachments=["Request.pdf"], received=self.DAY)
+        m2 = Mail("RE: FIN-53", "", "", attachments=["Request.pdf"], received=self.DAY + timedelta(days=3))
+        save_attachments(self.fake_msg()[0], m1, "FIN-53", self.dir)
+        save_attachments(self.fake_msg()[0], m2, "FIN-53", self.dir)
+        self.assertEqual(sorted(p.name for p in (self.dir / "FIN-53").iterdir()),
+                         ["2027-10-08_Request.pdf", "2027-10-11_Request.pdf"])
+
+    def test_one_failure_does_not_stop_the_rest(self):
+        m = Mail("FIN-53", "", "", attachments=self.NAMES, received=self.DAY)
+        msg, written = self.fake_msg(fail_on={2})
+        results = save_attachments(msg, m, "FIN-53", self.dir)
+        self.assertTrue(results[0].startswith("FAILED") and "blocked by policy" in results[0])
+        self.assertTrue(results[1].startswith("saved "))
+        self.assertEqual(written, [4])
 
 
 class ExtractTests(unittest.TestCase):

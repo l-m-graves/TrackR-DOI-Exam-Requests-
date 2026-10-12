@@ -7,12 +7,13 @@ Two layers:
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
+from pathlib import Path
 
 # --- settings --------------------------------------------------------------
 # Placeholders only. Put your real paths/addresses in local_settings.py (git-ignored,
 # see local_settings.example.py) so they never get committed to GitHub.
 TRACKER_PATH = r"C:\Users\<you>\OneDrive - <Company>\Audit\DOI_Exam_Test_Tracker_v2.xlsx"
-ATTACH_DIR   = r"C:\Users\<you>\OneDrive - <Company>\Audit\DOI Attachments"
+ATTACH_DIR   = None    # folder for request attachments, e.g. r"C:\...\DOI Attachments"; None = don't save
 LOG_PATH     = r"C:\Users\<you>\OneDrive - <Company>\Audit\doi_run_log.csv"
 PUBLISH_PATH = None    # view-only copy for coworkers, e.g. a shared folder; None = don't publish
 
@@ -21,7 +22,9 @@ PUBLISH_PATH = None    # view-only copy for coworkers, e.g. a shared folder; Non
 REQUEST_ID_PATTERN = r"\b(?:FIN|IT|DOI-[A-Z]+)-\d+\b"
 SUBJECT_LIKES   = ("%FIN-%", "%IT-%", "%DOI-%")               # Outlook subject pre-filter (DASL LIKE, any one)
 SENDER_DOMAINS  = {"insurance.ca.gov", "example.test"}        # adjust to the real DOI domain
-MUST_BE_SENT_TO = {"audit@example.test"}                      # the audit mailbox, or your own address
+# Optional. Leave empty to skip the rule - the To line changes as a request moves between the
+# examiner and the assigned contact. Set it only if every request email must reach one address.
+MUST_BE_SENT_TO = set()
 BODY_PHRASES    = ("request", "please provide")               # any one must appear
 IMPORTANT_WORDS = ("DOI", "Request", "Follow-up")             # attachment file names containing any of these
 IGNORE_EXT      = (".png", ".gif", ".jpg", ".jpeg")           # signature logos are attachments too
@@ -54,6 +57,7 @@ class Mail:
     received: datetime = None       # naive local time (see extract())
     entry_id: str = ""              # Outlook's stable ID for the item
     sender_name: str = ""           # display name, for the tracker's Contact column
+    saved: list = field(default_factory=list)   # attachment results ("saved <path>" / "FAILED ...")
 
 
 def _norm(text: str) -> str:
@@ -66,6 +70,43 @@ def important_attachments(names) -> list:
     keys = [_norm(w) for w in IMPORTANT_WORDS]
     return [n for n in names
             if not n.lower().endswith(IGNORE_EXT) and any(k in _norm(n) for k in keys)]
+
+
+INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+
+
+def attachment_targets(rid: str, names, received: datetime, folder) -> list:
+    """Which attachments to save, and where: [(outlook_index, destination), ...].
+
+    ATTACH_DIR / <RequestID> / <YYYY-MM-DD>_<file name> - one folder per request, the received date
+    in front so a revised 'Request.pdf' on a later email doesn't collide with the first one.
+    Already-saved files are skipped, so re-runs don't duplicate. Pure Python - no Outlook."""
+    targets = []
+    keep = set(important_attachments(names))
+    for index, name in enumerate(names, start=1):           # Outlook's Attachments are 1-based
+        if name not in keep:
+            continue
+        safe = INVALID_CHARS.sub("_", name).strip(" .")
+        stem, dot, ext = safe.rpartition(".")
+        if dot and len(stem) > 100:                          # keep under Windows' 260-char path limit
+            safe = f"{stem[:100]}.{ext}"
+        dest = Path(folder) / rid / f"{received:%Y-%m-%d}_{safe}"
+        if not dest.exists() and dest not in [d for _, d in targets]:
+            targets.append((index, dest))
+    return targets
+
+
+def save_attachments(msg, m: Mail, rid: str, folder) -> list:
+    """COM: write the planned attachments to disk. One failure doesn't stop the others."""
+    results = []
+    for index, dest in attachment_targets(rid, m.attachments, m.received, folder):
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            msg.Attachments.Item(index).SaveAsFile(str(dest))
+            results.append(f"saved {dest}")
+        except Exception as e:
+            results.append(f"FAILED {dest.name}: {e}")
+    return results
 
 
 def smtp_address(recipient_or_sender):
@@ -112,8 +153,8 @@ def qualify(m: Mail) -> tuple[bool, str]:
         return False, "subject has no request ID"
     if m.sender.split("@")[-1] not in SENDER_DOMAINS:
         return False, f"sender domain not allowed: {m.sender}"
-    if not MUST_BE_SENT_TO & set(m.to + m.cc):
-        return False, "not addressed to the audit mailbox"
+    if MUST_BE_SENT_TO and not MUST_BE_SENT_TO & set(m.to + m.cc):
+        return False, "not addressed to MUST_BE_SENT_TO"
     body = m.body.lower()
     if not any(p in body for p in BODY_PHRASES):
         return False, "body lacks request wording"
@@ -123,8 +164,9 @@ def qualify(m: Mail) -> tuple[bool, str]:
 
 
 # --- Outlook side ----------------------------------------------------------
-def fetch_candidates(since: datetime, folder_path=("Inbox", "DOI Exam")):
-    """Coarse filter inside Outlook, then precise rules in Python."""
+def fetch_candidates(since: datetime, folder_path=("Inbox", "DOI Exam"), attach_dir=None):
+    """Coarse filter inside Outlook, then precise rules in Python. With attach_dir, qualifying
+    emails' request attachments are saved there (the Outlook item is only reachable here)."""
     import win32com.client
     ns = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
     folder = ns.GetDefaultFolder(6)                          # Inbox
@@ -139,5 +181,7 @@ def fetch_candidates(since: datetime, folder_path=("Inbox", "DOI Exam")):
             continue
         m = extract(msg)
         ok, reason = qualify(m)
+        if ok and attach_dir:
+            m.saved = save_attachments(msg, m, reason, attach_dir)
         (accepted if ok else rejected).append((m, reason))
     return accepted, rejected
