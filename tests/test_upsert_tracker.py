@@ -23,8 +23,8 @@ FIXTURE = Path(os.environ.get("DOI_TRACKER_FIXTURE",
                               Path(__file__).parent / "fixtures" / "DOI_Exam_Test_Tracker_v2.xlsx"))
 
 
-def mail(subject, received, entry_id, sender="examiner@example.test", name="Jordan Lee"):
-    return Mail(subject=subject, body="please provide", sender=sender, to=["audit@example.test"],
+def mail(subject, received, entry_id, sender="examiner@example.test", name="Jordan Lee", body="please provide"):
+    return Mail(subject=subject, body=body, sender=sender, to=["audit@example.test"],
                 attachments=["Request.pdf"], received=received, entry_id=entry_id, sender_name=name)
 
 
@@ -74,6 +74,12 @@ class UpsertTests(unittest.TestCase):
 
     def table_ref(self):
         return self.sheet().tables[TABLE].ref
+
+    def row_of_or_none(self, rid):
+        try:
+            return self.row_of(rid)
+        except StopIteration:
+            return None
 
     def row_of(self, rid):
         ws = self.sheet()
@@ -144,6 +150,41 @@ class UpsertTests(unittest.TestCase):
         self.assertEqual(self.sheet()[f"D{a['row']}"].value, "FIN-9901: Fake Reserve Detail")
         [b] = self.run_upsert([mail("RE: FIN-9901 Fake Reserve Detail", datetime(2027, 10, 9), "C2")])
         self.assertEqual((b["action"], b["row"]), ("updated", a["row"]))     # same row, no duplicate
+
+    # --- due date and last email sent --------------------------------------------
+    def test_new_row_gets_due_date_from_email(self):
+        m = mail("DOI-TEST-60 Request", datetime(2027, 10, 8), "D1", body="Please provide by October 22, 2027.")
+        [a] = self.run_upsert([m])
+        self.assertIn("due date", a["changes"])
+        self.assertEqual(self.sheet()[f"G{a['row']}"].value, datetime(2027, 10, 22))
+
+    def test_existing_due_date_is_never_overwritten_only_noted(self):
+        n = self.row_of("DOI-TEST-50")
+        before = self.sheet()[f"G{n}"].value
+        self.assertIsNotNone(before)
+        [a] = self.run_upsert([mail("RE: DOI-TEST-50 Request", datetime(2027, 10, 9), "D2",
+                                    body="Extension granted - now due 11/30/2027.")])
+        ws = self.sheet()
+        self.assertEqual(ws[f"G{n}"].value, before)
+        self.assertNotIn("due date", a["changes"])
+        self.assertIn("email states due 2027-11-30; tracker has", ws[f"O{n}"].value)
+
+    def test_asap_goes_to_notes_not_the_date_column(self):
+        [a] = self.run_upsert([mail("DOI-TEST-61 Request", datetime(2027, 10, 8), "D3", body="Please respond ASAP.")])
+        ws = self.sheet()
+        self.assertIsNone(ws[f"G{a['row']}"].value)
+        self.assertIn("due: ASAP", ws[f"O{a['row']}"].value)
+
+    def test_last_email_sent_only_moves_forward(self):
+        n = self.row_of("DOI-TEST-50")
+        cur = self.sheet()[f"M{n}"].value
+        older, newer = cur.replace(day=1) if cur.day > 1 else cur, datetime(2028, 1, 15, 14, 5)
+        self.assertEqual(self.run_upsert([], last_sent={"DOI-TEST-50": older}), [])     # not older
+        [a] = self.run_upsert([], last_sent={"DOI-TEST-50": newer, "DOI-TEST-999": newer})
+        self.assertEqual((a["request_id"], a["changes"], a["mail"]), ("DOI-TEST-50", "last email sent 2028-01-15", None))
+        self.assertEqual(self.sheet()[f"M{n}"].value, datetime(2028, 1, 15))           # date only
+        self.assertIsNone(self.row_of_or_none("DOI-TEST-999"))                         # no row created
+        self.assertEqual(self.run_upsert([], last_sent={"DOI-TEST-50": newer}), [])    # idempotent
 
     def test_earlier_email_moves_initial_received_back(self):
         [a] = self.run_upsert([mail("DOI-TEST-50 Request", datetime(2027, 10, 1, 8), "EARLY")])

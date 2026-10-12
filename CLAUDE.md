@@ -22,6 +22,7 @@ A Python tool that reads Department of Insurance (DOI) exam-request emails from 
 | `doi_filter.py` | Outlook fetch + qualification rules; settings block holds placeholders only |
 | `local_settings.py` | Real paths/addresses, overrides `doi_filter` settings. **Git-ignored**; template in `local_settings.example.py` |
 | `upsert_tracker.py` | Write/update tracker rows |
+| `due_dates.py` | `find_due(body, received)`: one clear due date near due wording → date; several dates / ASAP / TBD → note only. Strips quoted reply history first |
 | `doi_contacts.py` | Contact directory `DOI_Contacts.csv` (`CONTACTS_PATH`): records every Sender/To/CC on request emails each run; senders are trusted only once the user types `Y` in Approved |
 | `publish.py` | Publishes a view-only, Excel-recalculated copy to `PUBLISH_PATH` for coworkers |
 | `import_original.py` | One-time: rebuild the original request list (sheet `Requests`) in the tracker template's format → new file + `_Import_Log.csv`. Run locally on real data |
@@ -41,7 +42,7 @@ Outlook (COM) ──Restrict()──> extract() ──> Mail dataclass ──> q
    coarse filter in Outlook     only COM-touching fn    plain Python     returns (ok, reason)
 ```
 
-- `extract(msg) -> Mail` is the **only** function that touches COM. Everything downstream works on the `Mail` dataclass so it can be unit-tested with fake objects.
+- COM is confined to small functions in `doi_filter.py`: `extract(msg) -> Mail`, `extract_sent(msg) -> SentMail`, `save_attachments()`, and the `fetch_*` / `_outlook()` wrappers (plus `publish.excel_recalc`). Everything downstream works on plain dataclasses so it can be unit-tested with fake objects.
 - `qualify(m) -> (bool, str)`: every rejection returns a reason string. Log rejections — that is the audit trail.
 - `Items.Restrict()` dialects can't be mixed: chain one Jet filter (`[ReceivedTime] >= '...'`) and one DASL filter (`@SQL=...`).
 
@@ -75,13 +76,13 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 | D | Initial Request | input, text | yes ← subject |
 | E | Type | formula | **no** |
 | F | Follows Up On | formula | **no** |
-| G | Due Date | input, date | only if reliably parsed from body |
+| G | Due Date | input, date | yes, **only into an empty cell** and only one clear date (`due_dates.find_due`); a different stated date is noted in O, never overwritten |
 | H | Days Until Due | formula | **no** |
 | I | Status | input, dropdown | yes, `"Not Started"` for new rows only |
 | J | Action Flag | formula | **no** |
 | K | Completed On | input, date | no |
 | L | Contact | input, text | yes ← `Name <smtp>` |
-| M | Last Email Sent | input, date | yes ← newest Sent Items match by `ConversationID` |
+| M | Last Email Sent | input, date | yes ← newest Sent Items email whose subject has the ID or shares the request email's `ConversationID`; **only moves forward**; date only. `TRACK_SENT=False` turns off |
 | N | Days Since Last Email | formula | **no** |
 | O | Notes / Latest Update | input, text | append only, never overwrite |
 
@@ -105,7 +106,8 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 - Idempotent via that ref tag: an email whose ref is already in O is skipped. Nothing changed → no backup, no save.
 - Timestamped backup to `Backups/` next to the tracker before every save.
 - openpyxl requires Excel closed: refuses if `~$<name>` exists or the file can't be opened r+b. Also refuses if the file has charts/images/slicers (openpyxl would delete them).
-- Not yet done: M (Last Email Sent, needs Sent Items lookup by `ConversationID`) and G (Due Date parsing). Neither is written by the script yet.
+- Due Date (G): from `find_due()` per email; written only if G is empty; a conflicting stated date, several dates, or ASAP/TBD become text on that email's Notes line.
+- Last Email Sent (M): `run.py` reads Sent Items (`fetch_sent`, date-restricted, no subject filter so changed-subject replies still match by ConversationID) → `last_sent_by_request()` → `upsert(last_sent=...)`. Updates existing rows only, never creates rows, never moves M backwards. A Sent Items failure is logged and doesn't stop the run. This is what makes the sheet's FOLLOW UP flag (N ≥ FollowUpDays) meaningful.
 - `extract()` strips pywin32's timezone tag from `ReceivedTime` — openpyxl rejects tz-aware datetimes.
 
 ## Importing the original request list (`import_original.py`)

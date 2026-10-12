@@ -172,6 +172,28 @@ class AttachmentSaveTests(unittest.TestCase):
         self.assertEqual(written, [3, 4, 5, 7])
 
 
+class LastSentTests(unittest.TestCase):
+    def test_matches_by_subject_id_or_thread_and_keeps_newest(self):
+        from doi_filter import SentMail, last_sent_by_request
+        accepted = [(Mail("FIN-53 Request", "", "x@example.test", conversation_id="THREAD-A"), "FIN-53")]
+        sent = [
+            SentMail("RE: FIN-53 Request", datetime(2027, 10, 5, 10)),
+            SentMail("Documents attached", datetime(2027, 10, 7, 16), "THREAD-A"),   # subject changed
+            SentMail("RE: IT-39 Access Review", datetime(2027, 10, 6, 9)),
+            SentMail("Lunch?", datetime(2027, 10, 8, 12), "THREAD-Z"),               # unrelated
+            SentMail("RE: FIN-53 Request", datetime(2027, 10, 4, 8)),                # older
+        ]
+        self.assertEqual(last_sent_by_request(sent, accepted),
+                         {"FIN-53": datetime(2027, 10, 7, 16), "IT-39": datetime(2027, 10, 6, 9)})
+
+    def test_extract_sent_strips_timezone(self):
+        from doi_filter import extract_sent
+        msg = SimpleNamespace(Subject="RE: FIN-53", ConversationID="T1",
+                              SentOn=datetime(2027, 10, 5, 10, tzinfo=timezone(timedelta(0))))
+        s = extract_sent(msg)
+        self.assertEqual((s.subject, s.conversation_id, s.sent_on), ("RE: FIN-53", "T1", datetime(2027, 10, 5, 10)))
+
+
 class ExtractTests(unittest.TestCase):
     """extract() with fake objects shaped like Outlook's COM items."""
 

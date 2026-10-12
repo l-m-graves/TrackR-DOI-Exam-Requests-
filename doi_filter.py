@@ -17,6 +17,7 @@ ATTACH_DIR   = None    # folder for request attachments, e.g. r"C:\...\DOI_Attac
 LOG_PATH     = r"C:\Users\<you>\OneDrive - <Company>\Audit\Logs\DOI_Run_Log.csv"
 PUBLISH_PATH = None    # view-only copy for coworkers, e.g. a shared folder; None = don't publish
 CONTACTS_PATH = None   # contact directory the script keeps up to date (DOI_Contacts.csv); None = off
+TRACK_SENT   = True    # fill Last Email Sent from your Sent Items; False = leave column M alone
 
 # Request IDs: FIN-53, IT-39 (real); DOI-TEST-41 (test data). If a new prefix appears, add it to
 # BOTH lines - the Outlook pre-filter has to agree with the pattern or those emails never arrive.
@@ -73,6 +74,29 @@ class Mail:
     sender_name: str = ""           # display name, for the tracker's Contact column
     saved: list = field(default_factory=list)   # attachment results ("saved <path>" / "FAILED ...")
     names: dict = field(default_factory=dict)   # address -> display name, for the contact directory
+    conversation_id: str = ""       # Outlook's thread ID - links your replies in Sent Items
+
+
+@dataclass
+class SentMail:
+    """An email YOU sent (Sent Items) - only what's needed for Last Email Sent."""
+    subject: str
+    sent_on: datetime
+    conversation_id: str = ""
+
+
+def last_sent_by_request(sent, accepted) -> dict:
+    """Request ID -> newest date you emailed about it. A sent email counts for a request when
+    its subject names the ID (e.g. 'RE: FIN-53 ...') or it is in the same Outlook conversation
+    as a request email (a reply whose subject was changed). Pure Python."""
+    by_thread = {m.conversation_id: rid for m, rid in accepted if m.conversation_id}
+    latest = {}
+    for s in sent:
+        hit = REQUEST_ID.search(s.subject or "")
+        rid = hit.group(0) if hit else by_thread.get(s.conversation_id)
+        if rid and s.sent_on and (rid not in latest or s.sent_on > latest[rid]):
+            latest[rid] = s.sent_on
+    return latest
 
 
 def _norm(text: str) -> str:
@@ -161,7 +185,14 @@ def extract(msg) -> Mail:
         entry_id=msg.EntryID,
         sender_name=msg.SenderName or "",
         names=names,
+        conversation_id=getattr(msg, "ConversationID", "") or "",
     )
+
+
+def extract_sent(msg) -> SentMail:
+    """COM -> SentMail (Sent Items)."""
+    return SentMail(subject=msg.Subject or "", sent_on=_naive(msg.SentOn),
+                    conversation_id=getattr(msg, "ConversationID", "") or "")
 
 
 # --- the rules -------------------------------------------------------------
@@ -184,12 +215,23 @@ def qualify(m: Mail, approved_senders=()) -> tuple[bool, str]:
 
 
 # --- Outlook side ----------------------------------------------------------
+def _outlook():
+    import win32com.client
+    return win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
+
+
+def fetch_sent(since: datetime) -> list:
+    """Your Sent Items since a date. No subject filter on purpose: a reply in a request's
+    thread counts even if its subject no longer shows the ID (matched by ConversationID)."""
+    items = _outlook().GetDefaultFolder(5).Items                 # 5 = Sent Items
+    items = items.Restrict(f"[SentOn] >= '{since:%m/%d/%Y} 12:00 AM'")
+    return [extract_sent(msg) for msg in items if msg.Class == 43]
+
+
 def fetch_candidates(since: datetime, folder_path=("Inbox", "DOI Exam"), attach_dir=None, approved_senders=()):
     """Coarse filter inside Outlook, then precise rules in Python. With attach_dir, qualifying
     emails' request attachments are saved there (the Outlook item is only reachable here)."""
-    import win32com.client
-    ns = win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
-    folder = ns.GetDefaultFolder(6)                          # Inbox
+    folder = _outlook().GetDefaultFolder(6)                  # Inbox
     for name in folder_path[1:]:                             # walk into sub-folders by name
         folder = folder.Folders(name)
     items = folder.Items

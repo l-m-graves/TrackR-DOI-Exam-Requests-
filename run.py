@@ -48,6 +48,11 @@ def log_row(run_at, m, result, detail):
             "result": result, "detail": detail}
 
 
+def run_row(run_at, result, detail):
+    """A log line that isn't about one inbound email (publish, contacts, Sent Items...)."""
+    return {"run_at": f"{run_at:%Y-%m-%d %H:%M:%S}", "result": result, "detail": detail}
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--days", type=int, default=14, help="how many days back to look (default 14)")
@@ -63,15 +68,25 @@ def main():
     print(f"{len(accepted)} qualified, {len(rejected)} rejected")
 
     log = [log_row(run_at, m, "rejected", reason) for m, reason in rejected]
+    last_sent = {}
+    if doi_filter.TRACK_SENT:                       # Sent Items -> Last Email Sent (column M)
+        try:
+            sent = doi_filter.fetch_sent(since=run_at - timedelta(days=args.days))
+            last_sent = doi_filter.last_sent_by_request(sent, accepted)
+        except Exception as e:                      # never let Sent Items stop the main update
+            print(f"Sent Items not read: {e}")
+            log.append(run_row(run_at, "error", f"Sent Items not read: {e}"))
     try:
-        actions = upsert(doi_filter.TRACKER_PATH, accepted, dry_run=args.dry_run)
+        actions = upsert(doi_filter.TRACKER_PATH, accepted, dry_run=args.dry_run, last_sent=last_sent)
     except TrackerError as e:
         print(f"NOT WRITTEN: {e}")
         log += [log_row(run_at, m, "error", str(e)) for m, _ in accepted]
         actions = []
     for a in actions:
         print(f"  {a['action']:9} {a['request_id']:<16} row {a['row']:<4} {a['changes']}")
-        log.append(log_row(run_at, a["mail"], a["action"], f"row {a['row']}: {a['changes']}"))
+        detail = f"row {a['row']}: {a['changes']}"
+        log.append(log_row(run_at, a["mail"], a["action"], detail) if a["mail"]
+                   else run_row(run_at, a["action"], f"{a['request_id']} {detail}"))
     for m, rid in accepted:                         # attachments are evidence - log each one
         for result in m.saved:
             print(f"  attachment {rid:<15} {result}")
@@ -92,8 +107,7 @@ def main():
               + (f" - open {Path(doi_filter.CONTACTS_PATH).name} and type Y in Approved" if pending else ""))
         if not args.dry_run:
             result = doi_contacts.save(doi_filter.CONTACTS_PATH, contacts)
-            log.append({"run_at": f"{run_at:%Y-%m-%d %H:%M:%S}", "result": "contacts",
-                        "detail": f"{len(new)} new: {', '.join(new)}; {result}" if new else result})
+            log.append(run_row(run_at, "contacts", f"{len(new)} new: {', '.join(new)}; {result}" if new else result))
 
     if args.dry_run:
         print("Dry run - tracker, shared copy, contacts and log not written.")
@@ -103,7 +117,7 @@ def main():
     if doi_filter.PUBLISH_PATH:
         result = publish(doi_filter.TRACKER_PATH, doi_filter.PUBLISH_PATH)
         print(result)
-        log.append({"run_at": f"{run_at:%Y-%m-%d %H:%M:%S}", "result": "publish", "detail": result})
+        log.append(run_row(run_at, "publish", result))
     write_log(doi_filter.LOG_PATH, log)
 
 

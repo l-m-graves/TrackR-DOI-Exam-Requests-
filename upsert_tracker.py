@@ -18,14 +18,16 @@ from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 
 from doi_filter import REQUEST_ID
+from due_dates import find_due
 
 SHEET = "DOI Exam Tracker"
 TABLE = "tblRequests"
 LAST_ROW = 1000         # the trk* named ranges and dropdowns stop at row 1000
 
 # Columns the script fills (letters match the sheet). Everything else is either
-# a formula (A, E, F, H, J, N) or left for a person to type (B, G, K, M).
+# a formula (A, E, F, H, J, N) or left for a person to type (B, K).
 COL_RECEIVED, COL_REQUEST, COL_STATUS, COL_CONTACT, COL_NOTES = "C", "D", "I", "L", "O"
+COL_DUE, COL_LAST_SENT = "G", "M"
 
 # File parts openpyxl cannot carry through a save. If the tracker ever gains
 # one of these (e.g. a chart on Summary), stop instead of silently deleting it.
@@ -61,8 +63,18 @@ def request_text(subject: str, rid: str) -> str:
     return text
 
 
-def note_line(m, ref: str) -> str:
-    return f"{m.received:%Y-%m-%d} email from {m.sender}: {m.subject} [{ref}]"
+def note_line(m, ref: str, extra: str = "") -> str:
+    extra = f" - {extra}" if extra else ""
+    return f"{m.received:%Y-%m-%d} email from {m.sender}: {m.subject}{extra} [{ref}]"
+
+
+def _day(value):
+    """A cell value or date as midnight datetime (the sheet's dates have no time), else None."""
+    if isinstance(value, datetime):
+        return datetime.combine(value.date(), time())
+    if hasattr(value, "year") and hasattr(value, "day"):
+        return datetime(value.year, value.month, value.day)
+    return None
 
 
 def contact(m) -> str:
@@ -138,9 +150,11 @@ def _append_row(ws, tbl, first, last) -> int:
     return new
 
 
-def upsert(path, accepted, backup_dir=None, dry_run=False) -> list:
+def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None) -> list:
     """accepted: list of (Mail, request_id) from fetch_candidates().
-    Returns one action dict per email: added / updated / unchanged."""
+    last_sent: {request_id: datetime} from doi_filter.last_sent_by_request() (your Sent Items).
+    Returns one action dict per email (added / updated / unchanged), plus one per row whose
+    Last Email Sent moved forward."""
     path = Path(path)
     check_unlocked(path)
     check_lossless(path)
@@ -175,16 +189,44 @@ def upsert(path, accepted, backup_dir=None, dry_run=False) -> list:
             ws[f"{COL_CONTACT}{row}"] = contact(m)
             changes.append("contact")
 
+        # Due Date: only a single clear date from this email, only into an EMPTY cell. A different
+        # date than the one already there (an extension?) is noted for you, never overwritten.
+        extra = []
+        due = find_due(m.body, m.received)
+        if due["date"]:
+            stated, cur_due = _day(due["date"]), _day(ws[f"{COL_DUE}{row}"].value)
+            if ws[f"{COL_DUE}{row}"].value in (None, ""):
+                ws[f"{COL_DUE}{row}"] = stated
+                changes.append("due date")
+            elif cur_due != stated:
+                extra.append(f"email states due {stated:%Y-%m-%d}; tracker has "
+                             f"{cur_due:%Y-%m-%d} - not changed" if cur_due else
+                             f"email states due {stated:%Y-%m-%d} - Due Date cell not changed")
+        elif due["note"]:
+            extra.append(due["note"])
+
         # Notes: append-only, one line per email, tagged so re-runs can tell it's done.
         notes = ws[f"{COL_NOTES}{row}"].value or ""
         if ref not in notes:
-            line = note_line(m, ref)
+            line = note_line(m, ref, "; ".join(extra))
             ws[f"{COL_NOTES}{row}"] = f"{notes}\n{line}" if notes else line
             changes.append("note")
 
         kind = "added" if "new row" in changes else ("updated" if changes else "unchanged")
         actions.append({"request_id": rid, "row": row, "action": kind,
                         "changes": ", ".join(changes), "ref": ref, "mail": m})
+
+    # Last Email Sent: your newest sent email about each request already in the tracker. Only
+    # ever moves forward, so a date you typed that is newer than anything found is kept.
+    for rid, sent_on in sorted((last_sent or {}).items()):
+        row = rows.get(rid)
+        if row is None:                                   # sent mail never creates a request row
+            continue
+        sent_day, cur = _day(sent_on), _day(ws[f"{COL_LAST_SENT}{row}"].value)
+        if cur is None or sent_day > cur:
+            ws[f"{COL_LAST_SENT}{row}"] = sent_day
+            actions.append({"request_id": rid, "row": row, "action": "updated",
+                            "changes": f"last email sent {sent_day:%Y-%m-%d}", "ref": "", "mail": None})
 
     if any(a["action"] != "unchanged" for a in actions) and not dry_run:
         backup(path, backup_dir)                # nothing changed -> no backup, no save
