@@ -1,5 +1,5 @@
-"""Tests for publish.py. Excel isn't available here, so a fake recalc stands in for
-excel_recalc(); the real one is tested by running run.py on Windows."""
+"""Tests for Publish.py. Excel isn't available here, so a fake recalc stands in for
+excel_recalc(); the real one is tested by running Run.py on Windows."""
 import os
 import shutil
 import tempfile
@@ -8,7 +8,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from publish import needs_publish, publish
+from Publish import needs_publish, publish
 
 
 class PublishTests(unittest.TestCase):
@@ -16,7 +16,7 @@ class PublishTests(unittest.TestCase):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
         self.master = self.tmp / "mine" / "tracker.xlsx"
-        self.dest = self.tmp / "shared" / "DOI Exam Tracker (view only).xlsx"
+        self.dest = self.tmp / "shared" / "DOI_Exam_Tracker_View_Only.xlsx"
         self.master.parent.mkdir()
         self.dest.parent.mkdir()
         self.master.write_bytes(b"version 1")
@@ -61,7 +61,7 @@ class PublishTests(unittest.TestCase):
     def test_shared_copy_open_leaves_old_copy_and_no_debris(self):
         publish(self.master, self.dest, recalc=self.fake_recalc)
         self.edit_master(b"version 2")
-        with mock.patch("publish.os.replace", side_effect=PermissionError):
+        with mock.patch("Publish.os.replace", side_effect=PermissionError):
             result = publish(self.master, self.dest, recalc=self.fake_recalc)
         self.assertIn("open by someone", result)
         self.assertEqual(self.dest.read_bytes(), b"version 1 +calculated")

@@ -1,6 +1,6 @@
 """One-time import: rebuild the original request list in the tracker's format.
 
-    python import_original.py ORIGINAL.xlsx TRACKER_TEMPLATE.xlsx OUTPUT.xlsx
+    python Import_Original.py ORIGINAL.xlsx TRACKER_TEMPLATE.xlsx OUTPUT.xlsx
 
 - ORIGINAL          the old list (sheet "Requests", one row per request, headers in row 1)
 - TRACKER_TEMPLATE  DOI_Exam_Test_Tracker_v2.xlsx - supplies the layout, formulas, dropdowns
@@ -8,7 +8,7 @@
 - OUTPUT            a NEW file. Both inputs are left untouched.
 
 Anything the script had to change or could not decide is printed as a review list and written
-to OUTPUT_import_log.csv (source row -> tracker row), so every imported row can be traced
+to OUTPUT_Import_Log.csv (source row -> tracker row), so every imported row can be traced
 back to the original - the evidence trail for this one-off migration.
 """
 import argparse
@@ -22,7 +22,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 
-from upsert_tracker import LAST_ROW, SHEET, TABLE, _table_bounds, check_lossless, first_word_id
+from Upsert_Tracker import LAST_ROW, SHEET, TABLE, _table_bounds, check_lossless, first_word_id
 
 SOURCE_SHEET = "Requests"
 # original header (lower-case) -> tracker column
@@ -183,7 +183,7 @@ def build(original, template, output):
 
     wb.calculation.fullCalcOnLoad = True
     wb.save(output)
-    log_path = Path(output).with_name(Path(output).stem + "_import_log.csv")
+    log_path = Path(output).with_name(Path(output).stem + "_Import_Log.csv")
     with open(log_path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=["source_row", "tracker_row", "request_id", "review"])
         w.writeheader()

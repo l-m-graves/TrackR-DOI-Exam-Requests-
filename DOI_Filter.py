@@ -10,12 +10,13 @@ from datetime import datetime
 from pathlib import Path
 
 # --- settings --------------------------------------------------------------
-# Placeholders only. Put your real paths/addresses in local_settings.py (git-ignored,
-# see local_settings.example.py) so they never get committed to GitHub.
+# Placeholders only. Put your real paths/addresses in Local_Settings.py (git-ignored,
+# see Local_Settings_Example.py) so they never get committed to GitHub.
 TRACKER_PATH = r"C:\Users\<you>\OneDrive - <Company>\Audit\DOI_Exam_Test_Tracker_v2.xlsx"
 ATTACH_DIR   = None    # folder for request attachments, e.g. r"C:\...\DOI Attachments"; None = don't save
-LOG_PATH     = r"C:\Users\<you>\OneDrive - <Company>\Audit\doi_run_log.csv"
+LOG_PATH     = r"C:\Users\<you>\OneDrive - <Company>\Audit\Logs\DOI_Run_Log.csv"
 PUBLISH_PATH = None    # view-only copy for coworkers, e.g. a shared folder; None = don't publish
+CONTACTS_PATH = None   # contact directory the script keeps up to date (DOI_Contacts.csv); None = off
 
 # Request IDs: FIN-53, IT-39 (real); DOI-TEST-41 (test data). If a new prefix appears, add it to
 # BOTH lines - the Outlook pre-filter has to agree with the pattern or those emails never arrive.
@@ -27,15 +28,20 @@ SENDER_DOMAINS  = {"insurance.ca.gov", "example.test"}        # adjust to the re
 MUST_BE_SENT_TO = set()
 BODY_PHRASES    = ("request", "please provide")               # any one must appear
 IMPORTANT_WORDS = ("DOI", "Request", "Follow-up")             # attachment file names containing any of these
-IGNORE_EXT      = (".png", ".gif", ".jpg", ".jpeg")           # signature logos are attachments too
+IGNORE_EXT      = (".png", ".gif", ".jpg", ".jpeg")           # rule 5 ignores images (signature logos)
+ATTACH_TYPES    = (".pdf", ".doc", ".docx", ".png", ".xlsx")  # what ATTACH_DIR saves from qualifying emails
 SMTP_PROP = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E"   # PR_SMTP_ADDRESS
 
 try:
-    from local_settings import *    # noqa: F401,F403  - real values override the placeholders above
+    from Local_Settings import *    # noqa: F401,F403  - real values override the placeholders above
 except ImportError:
-    pass
+    try:                            # older name, from before the Title_Case renaming
+        from local_settings import *    # noqa: F401,F403
+        print("Note: rename local_settings.py to Local_Settings.py (the old name still works for now).")
+    except ImportError:
+        pass
 
-REQUEST_ID = re.compile(REQUEST_ID_PATTERN)     # compiled after local_settings so an override applies
+REQUEST_ID = re.compile(REQUEST_ID_PATTERN)     # compiled after Local_Settings so an override applies
 
 
 def subject_filter() -> str:
@@ -58,6 +64,7 @@ class Mail:
     entry_id: str = ""              # Outlook's stable ID for the item
     sender_name: str = ""           # display name, for the tracker's Contact column
     saved: list = field(default_factory=list)   # attachment results ("saved <path>" / "FAILED ...")
+    names: dict = field(default_factory=dict)   # address -> display name, for the contact directory
 
 
 def _norm(text: str) -> str:
@@ -73,18 +80,21 @@ def important_attachments(names) -> list:
 
 
 INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
+INLINE_IMAGE = re.compile(r"^image\d{3}\.(png|jpe?g|gif)$", re.I)   # Outlook's names for logos pasted in a body
 
 
 def attachment_targets(rid: str, names, received: datetime, folder) -> list:
     """Which attachments to save, and where: [(outlook_index, destination), ...].
 
+    Every attachment of an ATTACH_TYPES type is kept (the whole email is request evidence),
+    except Outlook's auto-named inline images (image001.png = signature logos).
+
     ATTACH_DIR / <RequestID> / <YYYY-MM-DD>_<file name> - one folder per request, the received date
     in front so a revised 'Request.pdf' on a later email doesn't collide with the first one.
     Already-saved files are skipped, so re-runs don't duplicate. Pure Python - no Outlook."""
     targets = []
-    keep = set(important_attachments(names))
     for index, name in enumerate(names, start=1):           # Outlook's Attachments are 1-based
-        if name not in keep:
+        if not name.lower().endswith(ATTACH_TYPES) or INLINE_IMAGE.match(name):
             continue
         safe = INVALID_CHARS.sub("_", name).strip(" .")
         stem, dot, ext = safe.rpartition(".")
@@ -127,12 +137,12 @@ def _naive(dt):
 
 def extract(msg) -> Mail:
     """COM -> Mail. Only this function touches Outlook."""
-    to, cc = [], []
+    to, cc, names = [], [], {}
     for r in msg.Recipients:                      # r.Type: 1 = To, 2 = CC, 3 = BCC
-        if r.Type == 1:
-            to.append(smtp_address(r))
-        elif r.Type == 2:                         # BCC is not "on To or CC" - leave it out
-            cc.append(smtp_address(r))
+        if r.Type in (1, 2):                      # BCC is not "on To or CC" - leave it out
+            address = smtp_address(r)
+            (to if r.Type == 1 else cc).append(address)
+            names[address] = getattr(r, "Name", "") or ""
     return Mail(
         subject=msg.Subject or "",
         body=msg.Body or "",
@@ -142,17 +152,19 @@ def extract(msg) -> Mail:
         received=_naive(msg.ReceivedTime),
         entry_id=msg.EntryID,
         sender_name=msg.SenderName or "",
+        names=names,
     )
 
 
 # --- the rules -------------------------------------------------------------
-def qualify(m: Mail) -> tuple[bool, str]:
-    """Return (ok, reason). Every rejection names the rule that failed - that is your audit trail."""
+def qualify(m: Mail, approved_senders=()) -> tuple[bool, str]:
+    """Return (ok, reason). Every rejection names the rule that failed - that is your audit trail.
+    approved_senders: individual addresses you approved in the contact directory."""
     rid = REQUEST_ID.search(m.subject)
     if not rid:
         return False, "subject has no request ID"
-    if m.sender.split("@")[-1] not in SENDER_DOMAINS:
-        return False, f"sender domain not allowed: {m.sender}"
+    if m.sender.split("@")[-1] not in SENDER_DOMAINS and m.sender not in approved_senders:
+        return False, f"sender not approved: {m.sender}"
     if MUST_BE_SENT_TO and not MUST_BE_SENT_TO & set(m.to + m.cc):
         return False, "not addressed to MUST_BE_SENT_TO"
     body = m.body.lower()
@@ -164,7 +176,7 @@ def qualify(m: Mail) -> tuple[bool, str]:
 
 
 # --- Outlook side ----------------------------------------------------------
-def fetch_candidates(since: datetime, folder_path=("Inbox", "DOI Exam"), attach_dir=None):
+def fetch_candidates(since: datetime, folder_path=("Inbox", "DOI Exam"), attach_dir=None, approved_senders=()):
     """Coarse filter inside Outlook, then precise rules in Python. With attach_dir, qualifying
     emails' request attachments are saved there (the Outlook item is only reachable here)."""
     import win32com.client
@@ -180,7 +192,7 @@ def fetch_candidates(since: datetime, folder_path=("Inbox", "DOI Exam"), attach_
         if msg.Class != 43:                                  # olMail only
             continue
         m = extract(msg)
-        ok, reason = qualify(m)
+        ok, reason = qualify(m, approved_senders)
         if ok and attach_dir:
             m.saved = save_attachments(msg, m, reason, attach_dir)
         (accepted if ok else rejected).append((m, reason))

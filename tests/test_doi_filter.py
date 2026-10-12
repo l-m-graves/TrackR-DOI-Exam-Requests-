@@ -1,4 +1,4 @@
-"""Tests for the rules in doi_filter.py - no Outlook needed.
+"""Tests for the rules in DOI_Filter.py - no Outlook needed.
 
 Run from the repo folder:  python -m unittest -v
 """
@@ -10,11 +10,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import doi_filter
-from doi_filter import (Mail, attachment_targets, extract, important_attachments, qualify,
+import DOI_Filter
+from DOI_Filter import (Mail, attachment_targets, extract, important_attachments, qualify,
                         save_attachments, subject_filter)
 
-# Pin the settings so a real local_settings.py on your laptop can't change test results.
+# Pin the settings so a real Local_Settings.py on your laptop can't change test results.
 TEST_SETTINGS = {
     "SENDER_DOMAINS": {"example.test"},
     "MUST_BE_SENT_TO": {"audit@example.test"},
@@ -39,7 +39,7 @@ def good_mail(**overrides):
 
 class QualifyTests(unittest.TestCase):
     def setUp(self):
-        patcher = mock.patch.multiple(doi_filter, **TEST_SETTINGS)
+        patcher = mock.patch.multiple(DOI_Filter, **TEST_SETTINGS)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -52,7 +52,7 @@ class QualifyTests(unittest.TestCase):
     def test_each_rule_rejects_with_its_own_reason(self):
         cases = {
             "subject has no request ID": dict(subject="Quarterly update"),
-            "sender domain not allowed": dict(sender="someone@other.test"),
+            "sender not approved": dict(sender="someone@other.test"),
             "not addressed to MUST_BE_SENT_TO": dict(to=["someone@example.test"]),
             "body lacks request wording": dict(body="FYI only."),
             "no attachment named": dict(attachments=["image001.png", "notes.pdf"]),
@@ -63,8 +63,13 @@ class QualifyTests(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertIn(reason, why)
 
+    def test_individually_approved_sender_passes(self):
+        m = good_mail(sender="coordinator@other.test")
+        self.assertFalse(qualify(m)[0])
+        self.assertEqual(qualify(m, approved_senders={"coordinator@other.test"}), (True, "DOI-TEST-60"))
+
     def test_recipient_rule_skipped_when_setting_is_empty(self):
-        with mock.patch.object(doi_filter, "MUST_BE_SENT_TO", set()):
+        with mock.patch.object(DOI_Filter, "MUST_BE_SENT_TO", set()):
             self.assertTrue(qualify(good_mail(to=["assigned.contact@example.test"], cc=[]))[0])
 
     def test_cc_counts_as_addressed(self):
@@ -106,7 +111,8 @@ class AttachmentTests(unittest.TestCase):
 
 
 class AttachmentSaveTests(unittest.TestCase):
-    NAMES = ["image001.png", "FIN-53 Request Letter.pdf", "notes.docx", "Follow-up: items?.xlsx"]
+    NAMES = ["image001.png", "FIN-53 Request Letter.pdf", "notes.docx", "Follow-up: items?.xlsx",
+             "Portal Screenshot.PNG", "data.csv", "old.doc"]
     DAY = datetime(2027, 10, 8, 9, 30)
 
     def setUp(self):
@@ -124,21 +130,24 @@ class AttachmentSaveTests(unittest.TestCase):
             return SimpleNamespace(SaveAsFile=save)
         return SimpleNamespace(Attachments=SimpleNamespace(Item=item)), written
 
-    def test_plan_keeps_request_files_only_with_outlook_numbering(self):
+    def test_plan_keeps_listed_types_with_outlook_numbering(self):
         plan = attachment_targets("FIN-53", self.NAMES, self.DAY, self.dir)
-        self.assertEqual([i for i, _ in plan], [2, 4])                  # 1-based, image + notes skipped
+        self.assertEqual([i for i, _ in plan], [2, 3, 4, 5, 7])         # 1-based; logo + .csv skipped
         self.assertEqual([d.relative_to(self.dir).as_posix() for _, d in plan],
                          ["FIN-53/2027-10-08_FIN-53 Request Letter.pdf",
-                          "FIN-53/2027-10-08_Follow-up_ items_.xlsx"])   # ':' and '?' made safe
+                          "FIN-53/2027-10-08_notes.docx",
+                          "FIN-53/2027-10-08_Follow-up_ items_.xlsx",    # ':' and '?' made safe
+                          "FIN-53/2027-10-08_Portal Screenshot.PNG",     # a real screenshot is kept
+                          "FIN-53/2027-10-08_old.doc"])
 
     def test_save_then_rerun_saves_nothing_new(self):
         m = Mail("FIN-53 Request", "", "x@example.test", attachments=self.NAMES, received=self.DAY)
         msg, written = self.fake_msg()
         first = save_attachments(msg, m, "FIN-53", self.dir)
-        self.assertEqual(written, [2, 4])
+        self.assertEqual(written, [2, 3, 4, 5, 7])
         self.assertTrue(all(r.startswith("saved ") for r in first))
         self.assertEqual(save_attachments(msg, m, "FIN-53", self.dir), [])   # already there
-        self.assertEqual(written, [2, 4])
+        self.assertEqual(written, [2, 3, 4, 5, 7])
 
     def test_same_name_on_a_later_email_is_kept_separately(self):
         m1 = Mail("FIN-53", "", "", attachments=["Request.pdf"], received=self.DAY)
@@ -153,8 +162,8 @@ class AttachmentSaveTests(unittest.TestCase):
         msg, written = self.fake_msg(fail_on={2})
         results = save_attachments(msg, m, "FIN-53", self.dir)
         self.assertTrue(results[0].startswith("FAILED") and "blocked by policy" in results[0])
-        self.assertTrue(results[1].startswith("saved "))
-        self.assertEqual(written, [4])
+        self.assertTrue(all(r.startswith("saved ") for r in results[1:]))
+        self.assertEqual(written, [3, 4, 5, 7])
 
 
 class ExtractTests(unittest.TestCase):
@@ -183,6 +192,7 @@ class ExtractTests(unittest.TestCase):
         self.assertEqual(m.cc, ["cc@example.test"])               # BCC left out
         self.assertEqual(m.sender_name, "Jordan Lee")
         self.assertEqual(m.attachments, ["DOI-TEST-61.pdf"])
+        self.assertEqual(set(m.names), {"audit@example.test", "cc@example.test"})   # BCC not recorded
 
     def test_received_time_is_naive_for_openpyxl(self):
         m = extract(self.fake_msg())

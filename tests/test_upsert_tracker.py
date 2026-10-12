@@ -1,4 +1,4 @@
-"""Tests for upsert_tracker.py against a copy of a FAKE-DATA tracker.
+"""Tests for Upsert_Tracker.py against a copy of a FAKE-DATA tracker.
 
 The workbook itself is not in the repo (*.xlsx is git-ignored). Put a copy that holds
 only test data at tests/fixtures/DOI_Exam_Test_Tracker_v2.xlsx, or point the
@@ -16,8 +16,8 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 
-from doi_filter import REQUEST_ID, Mail
-from upsert_tracker import (SHEET, TABLE, TrackerError, first_word_id, note_ref, request_text, upsert)
+from DOI_Filter import REQUEST_ID, Mail
+from Upsert_Tracker import (SHEET, TABLE, TrackerError, first_word_id, note_ref, request_text, upsert)
 
 FIXTURE = Path(os.environ.get("DOI_TRACKER_FIXTURE",
                               Path(__file__).parent / "fixtures" / "DOI_Exam_Test_Tracker_v2.xlsx"))

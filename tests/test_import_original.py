@@ -1,4 +1,4 @@
-"""Tests for import_original.py. The 'original' list is built here from invented values that
+"""Tests for Import_Original.py. The 'original' list is built here from invented values that
 mimic the real list's layout and quirks - no real data. Template tests need the fake tracker
 fixture (see test_upsert_tracker.py)."""
 import shutil
@@ -10,9 +10,9 @@ from pathlib import Path
 from openpyxl import Workbook, load_workbook
 from openpyxl.formula.translate import Translator
 
-from import_original import build, clean_request, list_block
+from Import_Original import build, clean_request, list_block
 from tests.test_upsert_tracker import FIXTURE
-from upsert_tracker import SHEET, TABLE
+from Upsert_Tracker import SHEET, TABLE
 
 HEADERS = ["Assigned to", "Initial Request Email Received", "Follow Up", "Request Name", "Due Date",
            "Contact", "Last Email Sent", "Status", "Completion Date"]

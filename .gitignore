@@ -1,7 +1,9 @@
 # Real settings and real data never leave the laptop
+Local_Settings.py
 local_settings.py
 *.xlsx
 ~$*
+Backups/
 backups/
 *.csv
 *.msg

@@ -17,7 +17,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 
-from doi_filter import REQUEST_ID
+from DOI_Filter import REQUEST_ID
 
 SHEET = "DOI Exam Tracker"
 TABLE = "tblRequests"
@@ -90,7 +90,7 @@ def check_lossless(path: Path):
 
 
 def backup(path: Path, backup_dir: Path = None) -> Path:
-    backup_dir = Path(backup_dir or path.parent / "backups")
+    backup_dir = Path(backup_dir or path.parent / "Backups")
     backup_dir.mkdir(parents=True, exist_ok=True)
     dest = backup_dir / f"{path.stem}_{datetime.now():%Y%m%d_%H%M%S}{path.suffix}"
     shutil.copy2(path, dest)                                # copy2 keeps the file's timestamps
