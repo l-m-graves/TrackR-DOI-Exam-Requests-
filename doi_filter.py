@@ -14,6 +14,7 @@ from datetime import datetime
 TRACKER_PATH = r"C:\Users\<you>\OneDrive - <Company>\Audit\DOI_Exam_Test_Tracker_v2.xlsx"
 ATTACH_DIR   = r"C:\Users\<you>\OneDrive - <Company>\Audit\DOI Attachments"
 LOG_PATH     = r"C:\Users\<you>\OneDrive - <Company>\Audit\doi_run_log.csv"
+PUBLISH_PATH = None    # view-only copy for coworkers, e.g. a shared folder; None = don't publish
 
 REQUEST_ID      = re.compile(r"\bDOI-[A-Z]+-\d+\b")
 SENDER_DOMAINS  = {"insurance.ca.gov", "example.test"}        # adjust to the real DOI domain

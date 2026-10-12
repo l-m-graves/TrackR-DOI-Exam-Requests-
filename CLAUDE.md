@@ -21,7 +21,8 @@ A Python tool that reads Department of Insurance (DOI) exam-request emails from 
 | `doi_filter.py` | Outlook fetch + qualification rules; settings block holds placeholders only |
 | `local_settings.py` | Real paths/addresses, overrides `doi_filter` settings. **Git-ignored**; template in `local_settings.example.py` |
 | `upsert_tracker.py` | Write/update tracker rows |
-| `run.py` | Entry point: fetch → qualify → upsert → CSV log (`--days N`, `--dry-run`) |
+| `publish.py` | Publishes a view-only, Excel-recalculated copy to `PUBLISH_PATH` for coworkers |
+| `run.py` | Entry point: fetch → qualify → upsert → publish → CSV log (`--days N`, `--dry-run`) |
 | `tests/` | `python -m unittest -v`. Upsert tests need a fake-data tracker at `tests/fixtures/DOI_Exam_Test_Tracker_v2.xlsx` or `$DOI_TRACKER_FIXTURE`; skipped otherwise. `*.xlsx` is git-ignored — don't commit workbooks |
 
 ## Architecture
@@ -89,6 +90,13 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 - openpyxl requires Excel closed: refuses if `~$<name>` exists or the file can't be opened r+b. Also refuses if the file has charts/images/slicers (openpyxl would delete them).
 - Not yet done: M (Last Email Sent, needs Sent Items lookup by `ConversationID`) and G (Due Date parsing). Neither is written by the script yet.
 - `extract()` strips pywin32's timezone tag from `ReceivedTime` — openpyxl rejects tz-aware datetimes.
+
+## Sharing with coworkers (`publish.py`)
+
+- The user's tracker (`TRACKER_PATH`) is the single source of truth; only the script and the user edit it. Coworkers only **view** a copy at `PUBLISH_PATH` (unset = no publishing). Their edits to the copy are overwritten — don't build two-way sync.
+- Publishes when the master is newer than the copy (so the user's own manual edits go out too), even if the upsert was refused because the master was open.
+- `excel_recalc()` is the only Excel-COM function (Windows-only, tested by the user): a separate hidden Excel (`DispatchEx`) opens a temp copy, `CalculateFull()`, saves with `ReadOnlyRecommended`. Needed because openpyxl saves no cached results, so Protected View / browser previews would show blank formula columns.
+- Swap into place with `os.replace` from a staged file in the same folder (atomic). Copy locked by a coworker or Excel failure → nothing published, logged, retried next run.
 
 ## Workbook conventions (if regenerating/editing)
 
