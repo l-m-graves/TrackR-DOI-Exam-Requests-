@@ -8,8 +8,9 @@ from datetime import datetime
 from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
+from openpyxl.formula.translate import Translator
 
-from import_original import build, clean_request
+from import_original import build, clean_request, list_block
 from tests.test_upsert_tracker import FIXTURE
 from upsert_tracker import SHEET, TABLE
 
@@ -62,6 +63,14 @@ class CleanRequestTests(unittest.TestCase):
         self.assertEqual(clean_request(None), ("", ["request name is blank"]))
 
 
+class ListBlockTests(unittest.TestCase):
+    def test_stops_at_first_blank_so_help_text_is_ignored(self):
+        ws = Workbook().active
+        for r, v in [(4, "Not Started"), (5, "Completed"), (14, "How this workbook works")]:
+            ws[f"A{r}"] = v
+        self.assertEqual(list_block(ws, "A"), ["Not Started", "Completed"])
+
+
 @unittest.skipUnless(FIXTURE.exists(), f"fake tracker fixture not found at {FIXTURE}")
 class BuildTests(unittest.TestCase):
     def setUp(self):
@@ -104,8 +113,9 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(ws["C4"].number_format, template_fmt)     # template formatting applied
 
     def test_formulas_on_every_row(self):
+        a4 = load_workbook(self.template)[SHEET]["A4"].value
         for r in range(4, 8):
-            self.assertEqual(self.ws[f"A{r}"].value, f'=IF($D{r}="","",LEFT($D{r},FIND(" ",$D{r}&" ")-1))')
+            self.assertEqual(self.ws[f"A{r}"].value, Translator(a4, origin="A4").translate_formula(f"A{r}"))
             for col in "EFHJN":
                 self.assertIn(f"$D{r}", self.ws[f"{col}{r}"].value)
 

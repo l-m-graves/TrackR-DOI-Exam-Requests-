@@ -17,7 +17,8 @@ A Python tool that reads Department of Insurance (DOI) exam-request emails from 
 
 | File | Role |
 |---|---|
-| `DOI_Exam_Test_Tracker_v2.xlsx` | The tracker (target of all writes) |
+| `DOI_Exam_Tracker_1.0.xlsx` | The live tracker (target of all writes). **Real data — never upload it to Claude**; share structure only |
+| `DOI_Exam_Test_Tracker_v2.xlsx` | Fake-data copy (`DOI-TEST-##`, `example.test`) — safe test fixture |
 | `doi_filter.py` | Outlook fetch + qualification rules; settings block holds placeholders only |
 | `local_settings.py` | Real paths/addresses, overrides `doi_filter` settings. **Git-ignored**; template in `local_settings.example.py` |
 | `upsert_tracker.py` | Write/update tracker rows |
@@ -40,7 +41,7 @@ Outlook (COM) ──Restrict()──> extract() ──> Mail dataclass ──> q
 ## Qualification rules (in `doi_filter.py` settings block)
 
 An email qualifies only if **all** pass:
-1. Subject contains a Request ID matching `REQUEST_ID_PATTERN` (default `\bDOI-[A-Z]+-\d+\b`). Real IDs may use another prefix: override `REQUEST_ID_PATTERN` **and** `SUBJECT_LIKE` (the Outlook DASL pre-filter) together in `local_settings.py`
+1. Subject contains a Request ID matching `REQUEST_ID_PATTERN` = `\b(?:FIN|IT|DOI-[A-Z]+)-\d+\b` — real IDs are `FIN-##` and `IT-##`; `DOI-TEST-##` is test data only. A new prefix must be added to **both** `REQUEST_ID_PATTERN` and `SUBJECT_LIKES` (the Outlook DASL pre-filter, OR'd by `subject_filter()`), or those emails never reach Python
 2. Sender domain in `SENDER_DOMAINS` (placeholder — user fills in the real DOI domain)
 3. `MUST_BE_SENT_TO` appears on To or CC
 4. Body contains one of `BODY_PHRASES`
@@ -77,8 +78,10 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 | N | Days Since Last Email | formula | **no** |
 | O | Notes / Latest Update | input, text | append only, never overwrite |
 
-- **Never write into formula columns** (A, E, F, H, J, N). When appending a row, copy formulas down from the row above and extend `tblRequests.ref`.
-- Request ID formula = first word of column D, so the subject text must start with the ID.
+- **Never write into formula columns** (A, E, F, H, J, N). When appending a row, copy formulas down from the first data row and extend `tblRequests.ref`.
+- Request ID formula = first word of column D with `:` stripped (`FIN-52:` → `FIN-52`); shows `(no ID)` if that word has no digit. `upsert_tracker.first_word_id()` is its Python twin — keep them in step. Type = contains "Follow". Follows Up On = ID before `Follow-up`/`Follow Up`, handling `FIN-27` and `FIN 45` → `FIN-45`; blank if the follow-up is to a non-ID (e.g. an interview).
+- Live data (since 2026-10-12): 18 real requests, two assignees on Lists. Due dates given as text ("ASAP") go to Notes, never into column G (keeps date math numeric).
+- **Known workbook bug:** `StatusList` = `OFFSET(Lists!$A$4,…,COUNTA(Lists!$A$4:$A$60))` also counts the help text that starts at Lists!A14, so the Status dropdown shows blanks and help paragraphs. Fix: count `$A$4:$A$12` instead. Code reads Lists columns only down to the first blank (`import_original.list_block`).
 - **Sheet Summary**: settings `C5` AsOf (`=TODAY()`), `C6` FollowUpDays, `C7` DueSoonDays; KPIs and breakdowns via named ranges (`trkStatus`, `trkDue`, `trkRequest`, … all rows 4:1000).
 - **Sheet Lists**: dropdown sources via dynamic names `StatusList` (A4↓) and `AssigneeList` (D4↓).
 

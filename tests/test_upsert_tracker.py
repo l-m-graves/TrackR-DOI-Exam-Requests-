@@ -14,9 +14,10 @@ from datetime import datetime
 from pathlib import Path
 
 from openpyxl import load_workbook
+from openpyxl.formula.translate import Translator
 
 from doi_filter import REQUEST_ID, Mail
-from upsert_tracker import (SHEET, TABLE, TrackerError, note_ref, request_text, upsert)
+from upsert_tracker import (SHEET, TABLE, TrackerError, first_word_id, note_ref, request_text, upsert)
 
 FIXTURE = Path(os.environ.get("DOI_TRACKER_FIXTURE",
                               Path(__file__).parent / "fixtures" / "DOI_Exam_Test_Tracker_v2.xlsx"))
@@ -37,7 +38,17 @@ class PureHelperTests(unittest.TestCase):
 
     def test_request_text_puts_id_first(self):
         self.assertEqual(request_text("Docs for DOI-TEST-60", "DOI-TEST-60"), "DOI-TEST-60 Docs for DOI-TEST-60")
-        self.assertEqual(request_text("DOI-TEST-60: docs", "DOI-TEST-60"), "DOI-TEST-60 DOI-TEST-60: docs")
+        self.assertEqual(request_text("DOI-TEST-60 - docs", "DOI-TEST-60"), "DOI-TEST-60 - docs")
+        self.assertEqual(request_text("DOI-TEST-60: docs", "DOI-TEST-60"), "DOI-TEST-60: docs")  # column A strips ':' 
+
+    def test_first_word_id_matches_column_a_formula(self):
+        self.assertEqual(first_word_id("FIN-52: Fake Subject"), "FIN-52")      # ':' stripped
+        self.assertEqual(first_word_id("IT-39 Request"), "IT-39")
+        self.assertEqual(first_word_id("Quarterly Statement Questions"), "")   # sheet shows (no ID)
+        self.assertEqual(first_word_id(None), "")
+
+    def test_request_text_keeps_colon_style(self):
+        self.assertEqual(request_text("RE: FIN-52: Fake Subject", "FIN-52"), "FIN-52: Fake Subject")
 
     def test_note_ref_is_stable_and_short(self):
         self.assertEqual(note_ref("ABC"), note_ref("ABC"))
@@ -79,8 +90,8 @@ class UpsertTests(unittest.TestCase):
         self.assertEqual(before, f"A3:O{r - 1}")
         self.assertEqual(ws.tables[TABLE].ref, f"A3:O{r}")
         self.assertEqual(ws.tables[TABLE].autoFilter.ref, f"A3:O{r}")
-        # formulas copied down and shifted to the new row
-        self.assertEqual(ws[f"A{r}"].value, f'=IF($D{r}="","",LEFT($D{r},FIND(" ",$D{r}&" ")-1))')
+        # formulas copied down from the first data row and shifted to the new row
+        self.assertEqual(ws[f"A{r}"].value, Translator(ws["A4"].value, origin="A4").translate_formula(f"A{r}"))
         for col in "EFHJN":
             self.assertTrue(str(ws[f"{col}{r}"].value).startswith("="), col)
             self.assertIn(f"$D{r}", ws[f"{col}{r}"].value)
@@ -127,6 +138,12 @@ class UpsertTests(unittest.TestCase):
         self.assertTrue(ws[f"O{n}"].value.startswith(old["O"] + "\n"))         # appended, not overwritten
         self.assertIn("[" + note_ref("FAKE50") + "]", ws[f"O{n}"].value)
         self.assertEqual(self.table_ref(), ref_before)                         # no new row
+
+    def test_reply_matches_row_whose_id_has_a_colon(self):
+        [a] = self.run_upsert([mail("FIN-9901: Fake Reserve Detail", datetime(2027, 10, 8), "C1")])
+        self.assertEqual(self.sheet()[f"D{a['row']}"].value, "FIN-9901: Fake Reserve Detail")
+        [b] = self.run_upsert([mail("RE: FIN-9901 Fake Reserve Detail", datetime(2027, 10, 9), "C2")])
+        self.assertEqual((b["action"], b["row"]), ("updated", a["row"]))     # same row, no duplicate
 
     def test_earlier_email_moves_initial_received_back(self):
         [a] = self.run_upsert([mail("DOI-TEST-50 Request", datetime(2027, 10, 1, 8), "EARLY")])

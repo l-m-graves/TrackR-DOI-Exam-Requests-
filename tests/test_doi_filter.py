@@ -8,7 +8,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import doi_filter
-from doi_filter import Mail, extract, important_attachments, qualify
+from doi_filter import Mail, extract, important_attachments, qualify, subject_filter
 
 # Pin the settings so a real local_settings.py on your laptop can't change test results.
 TEST_SETTINGS = {
@@ -61,6 +61,25 @@ class QualifyTests(unittest.TestCase):
 
     def test_cc_counts_as_addressed(self):
         self.assertTrue(qualify(good_mail(to=[], cc=["audit@example.test"]))[0])
+
+    def test_real_id_formats(self):
+        for subject, rid in [("FIN-53 Request - Fake Subject", "FIN-53"),
+                             ("RE: IT-39 Request - Fake Subject", "IT-39"),
+                             ("FIN-52: Fake Subject - FIN 45 Follow Up", "FIN-52")]:
+            with self.subTest(subject=subject):
+                self.assertEqual(qualify(good_mail(subject=subject)), (True, rid))
+
+    def test_lookalikes_are_not_ids(self):
+        for subject in ("AUDIT-2024 planning", "PROFIT-12 memo", "FIN 53 no hyphen", "fin-53 lower case"):
+            with self.subTest(subject=subject):
+                self.assertEqual(qualify(good_mail(subject=subject)), (False, "subject has no request ID"))
+
+    def test_outlook_prefilter_covers_every_prefix(self):
+        f = subject_filter()
+        for prefix in ("%FIN-%", "%IT-%", "%DOI-%"):
+            self.assertIn(f"LIKE '{prefix}'", f)
+        self.assertTrue(f.startswith("@SQL=("))
+        self.assertTrue(f.endswith(') AND "urn:schemas:httpmail:hasattachment" = 1'))
 
     def test_lowercase_id_is_not_a_request_id(self):
         self.assertFalse(qualify(good_mail(subject="doi-test-60 request"))[0])

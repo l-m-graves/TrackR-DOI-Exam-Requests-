@@ -45,11 +45,18 @@ def note_ref(entry_id: str) -> str:
     return "ref " + hashlib.sha1(entry_id.encode()).hexdigest()[:8]
 
 
+def first_word_id(text) -> str:
+    """Python twin of column A's formula: D's first word with ':' removed ('FIN-52:' -> 'FIN-52'),
+    or '' when that word has no digit (the sheet shows '(no ID)')."""
+    word = str(text or "").strip().split(" ", 1)[0].replace(":", "")
+    return word if any(ch.isdigit() for ch in word) else ""
+
+
 def request_text(subject: str, rid: str) -> str:
     """Column D text. The sheet's formulas take the Request ID as D's first word, so drop
     RE:/FW: prefixes and, if the ID still isn't the first word, put it in front."""
     text = REPLY_PREFIX.sub("", subject).strip()
-    if text.split(" ", 1)[0] != rid:
+    if first_word_id(text) != rid:
         text = f"{rid} {text}"
     return text
 
@@ -98,12 +105,12 @@ def _table_bounds(ws):
 
 
 def _index(ws, first, last) -> dict:
-    """Request ID -> row, using the same rule as column A's formula (first word of D)."""
+    """Request ID -> row, using the same rule as column A's formula (see first_word_id)."""
     rows = {}
     for r in range(first, last + 1):
-        text = ws[f"{COL_REQUEST}{r}"].value
-        if text:
-            rows.setdefault(str(text).split(" ", 1)[0], r)
+        rid = first_word_id(ws[f"{COL_REQUEST}{r}"].value)
+        if rid:
+            rows.setdefault(rid, r)
     return rows
 
 

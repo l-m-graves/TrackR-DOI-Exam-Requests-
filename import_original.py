@@ -22,7 +22,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 
-from upsert_tracker import LAST_ROW, SHEET, TABLE, _table_bounds, check_lossless
+from upsert_tracker import LAST_ROW, SHEET, TABLE, _table_bounds, check_lossless, first_word_id
 
 SOURCE_SHEET = "Requests"
 # original header (lower-case) -> tracker column
@@ -57,6 +57,18 @@ def clean_request(text):
     if not LEAD_ID.match(s):
         changes.append("no request ID at the start - fix column D by hand")
     return s, changes
+
+
+def list_block(ws, col):
+    """Values from row 4 down to the first blank cell. The Lists sheet has help text further
+    down column A, so 'every non-empty cell' would treat help paragraphs as statuses."""
+    out = []
+    for r in range(4, 61):
+        v = ws[f"{col}{r}"].value
+        if v in (None, ""):
+            break
+        out.append(v)
+    return out
 
 
 def _header_map(ws):
@@ -122,7 +134,7 @@ def build(original, template, output):
     wb = load_workbook(template)
     ws = wb[SHEET]
     lists = wb["Lists"]
-    statuses = [c.value for c in lists["A"][3:60] if c.value]
+    statuses = list_block(lists, "A")
     tbl, first, old_last = _table_bounds(ws)
     if first + len(rows) - 1 > LAST_ROW:
         raise SystemExit(f"{len(rows)} rows won't fit: named ranges stop at row {LAST_ROW}.")
@@ -144,7 +156,7 @@ def build(original, template, output):
         values, review = convert(rec, statuses)
         for col, v in values.items():
             ws[f"{col}{r}"] = v
-        rid = values["D"].split(" ", 1)[0] if values["D"] else ""
+        rid = first_word_id(values["D"])
         if rid and rid in seen_ids:
             review.append(f"duplicate request ID - also on tracker row {seen_ids[rid]}")
         seen_ids.setdefault(rid, r)
@@ -164,7 +176,7 @@ def build(original, template, output):
         tbl.autoFilter.ref = tbl.ref
 
     # Every assignee needs to be on the Lists sheet or the dropdown marks the cell invalid.
-    assignees = [c.value for c in lists["D"][3:60] if c.value]
+    assignees = list_block(lists, "D")
     for name in sorted({ws[f"B{r}"].value for r in range(first, new_last + 1)} - set(assignees) - {None}):
         lists.cell(4 + len(assignees), 4, name)
         assignees.append(name)

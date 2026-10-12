@@ -16,10 +16,10 @@ ATTACH_DIR   = r"C:\Users\<you>\OneDrive - <Company>\Audit\DOI Attachments"
 LOG_PATH     = r"C:\Users\<you>\OneDrive - <Company>\Audit\doi_run_log.csv"
 PUBLISH_PATH = None    # view-only copy for coworkers, e.g. a shared folder; None = don't publish
 
-# Request ID format. If your real IDs use another prefix (e.g. ABC-12), set both of these in
-# local_settings.py - the Outlook pre-filter has to agree with the pattern or emails never arrive.
-REQUEST_ID_PATTERN = r"\bDOI-[A-Z]+-\d+\b"
-SUBJECT_LIKE    = "%DOI-%"                                    # Outlook subject pre-filter (DASL LIKE)
+# Request IDs: FIN-53, IT-39 (real); DOI-TEST-41 (test data). If a new prefix appears, add it to
+# BOTH lines - the Outlook pre-filter has to agree with the pattern or those emails never arrive.
+REQUEST_ID_PATTERN = r"\b(?:FIN|IT|DOI-[A-Z]+)-\d+\b"
+SUBJECT_LIKES   = ("%FIN-%", "%IT-%", "%DOI-%")               # Outlook subject pre-filter (DASL LIKE, any one)
 SENDER_DOMAINS  = {"insurance.ca.gov", "example.test"}        # adjust to the real DOI domain
 MUST_BE_SENT_TO = {"audit@example.test"}                      # the audit mailbox, or your own address
 BODY_PHRASES    = ("request", "please provide")               # any one must appear
@@ -33,6 +33,13 @@ except ImportError:
     pass
 
 REQUEST_ID = re.compile(REQUEST_ID_PATTERN)     # compiled after local_settings so an override applies
+
+
+def subject_filter() -> str:
+    """DASL filter for Items.Restrict(): subject matches any prefix AND the email has attachments.
+    Deliberately loose ('%IT-%' also matches 'AUDIT-'); qualify() does the precise check."""
+    likes = " OR ".join(f'"urn:schemas:httpmail:subject" LIKE \'{p}\'' for p in SUBJECT_LIKES)
+    return f'@SQL=({likes}) AND "urn:schemas:httpmail:hasattachment" = 1'
 
 
 # --- plain-Python view of a message (what the rules operate on) -----------
@@ -125,8 +132,7 @@ def fetch_candidates(since: datetime, folder_path=("Inbox", "DOI Exam")):
         folder = folder.Folders(name)
     items = folder.Items
     items = items.Restrict(f"[ReceivedTime] >= '{since:%m/%d/%Y} 12:00 AM'")     # Jet syntax
-    items = items.Restrict(f'@SQL="urn:schemas:httpmail:subject" LIKE \'{SUBJECT_LIKE}\' '
-                           'AND "urn:schemas:httpmail:hasattachment" = 1')        # DASL syntax
+    items = items.Restrict(subject_filter())                                     # DASL syntax
     accepted, rejected = [], []
     for msg in items:
         if msg.Class != 43:                                  # olMail only

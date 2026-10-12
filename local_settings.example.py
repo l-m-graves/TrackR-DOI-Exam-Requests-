@@ -9,7 +9,8 @@ LOG_PATH     = r"C:\Users\<you>\OneDrive - <Company>\Audit\doi_run_log.csv"
 PUBLISH_PATH = r"C:\Users\<you>\<Company>\<Shared folder>\DOI Exam Tracker (view only).xlsx"
 
 SENDER_DOMAINS  = {"<real DOI domain>"}
-# Only if your request IDs are not DOI-XXX-## (e.g. ABC-12): keep these two in step.
-# REQUEST_ID_PATTERN = r"\bABC-\d+\b"
-# SUBJECT_LIKE       = "%ABC-%"
+# Request IDs default to FIN-##, IT-## and DOI-TEST-##. Only if a new prefix appears (e.g. ABC-12),
+# override both - keep them in step:
+# REQUEST_ID_PATTERN = r"\b(?:FIN|IT|ABC|DOI-[A-Z]+)-\d+\b"
+# SUBJECT_LIKES      = ("%FIN-%", "%IT-%", "%ABC-%", "%DOI-%")
 MUST_BE_SENT_TO = {"<audit mailbox address>"}
