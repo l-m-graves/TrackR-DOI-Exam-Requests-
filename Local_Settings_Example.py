@@ -15,7 +15,9 @@ CONTACTS_PATH = r"C:\Users\<you>\OneDrive - <Company>\Audit\DOI_Contacts.csv"
 # View-only copy for coworkers (a shared folder they can open). Must differ from TRACKER_PATH.
 PUBLISH_PATH = r"C:\Users\<you>\<Company>\<Shared folder>\DOI_Exam_Tracker_View_Only.xlsx"
 
-# Whole domains you trust (e.g. the DOI's). Individual people can instead be approved in DOI_Contacts.csv.
+# Whole domains you trust (e.g. the DOI's): the part AFTER the @, e.g. "insurance.ca.gov".
+# Never a public provider (gmail.com, icloud.com...) - that trusts everyone on it; approve
+# individual people in DOI_Contacts.csv instead.
 SENDER_DOMAINS  = {"<real DOI domain>"}
 # Request IDs default to FIN-##, IT-## and DOI-TEST-##. Only if a new prefix appears (e.g. ABC-12),
 # override both - keep them in step:

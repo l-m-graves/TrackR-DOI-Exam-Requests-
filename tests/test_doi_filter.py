@@ -63,6 +63,12 @@ class QualifyTests(unittest.TestCase):
                 self.assertFalse(ok)
                 self.assertIn(reason, why)
 
+    def test_domain_written_with_at_sign_or_capitals_still_matches(self):
+        domains = DOI_Filter.normalize_domains({"@Example.TEST", " insurance.ca.gov "})
+        self.assertEqual(domains, {"example.test", "insurance.ca.gov"})
+        with mock.patch.object(DOI_Filter, "SENDER_DOMAINS", domains):
+            self.assertTrue(qualify(good_mail(sender="Examiner@EXAMPLE.test"))[0])
+
     def test_individually_approved_sender_passes(self):
         m = good_mail(sender="coordinator@other.test")
         self.assertFalse(qualify(m)[0])

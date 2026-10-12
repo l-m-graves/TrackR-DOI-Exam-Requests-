@@ -44,6 +44,14 @@ except ImportError:
 REQUEST_ID = re.compile(REQUEST_ID_PATTERN)     # compiled after Local_Settings so an override applies
 
 
+def normalize_domains(domains) -> set:
+    """Forgive '@insurance.ca.gov' / 'Insurance.CA.gov': the check compares lower-case text after the '@'."""
+    return {d.strip().lstrip("@").lower() for d in domains}
+
+
+SENDER_DOMAINS = normalize_domains(SENDER_DOMAINS)
+
+
 def subject_filter() -> str:
     """DASL filter for Items.Restrict(): subject matches any prefix AND the email has attachments.
     Deliberately loose ('%IT-%' also matches 'AUDIT-'); qualify() does the precise check."""
@@ -163,7 +171,7 @@ def qualify(m: Mail, approved_senders=()) -> tuple[bool, str]:
     rid = REQUEST_ID.search(m.subject)
     if not rid:
         return False, "subject has no request ID"
-    if m.sender.split("@")[-1] not in SENDER_DOMAINS and m.sender not in approved_senders:
+    if m.sender.split("@")[-1].lower() not in SENDER_DOMAINS and m.sender not in approved_senders:
         return False, f"sender not approved: {m.sender}"
     if MUST_BE_SENT_TO and not MUST_BE_SENT_TO & set(m.to + m.cc):
         return False, "not addressed to MUST_BE_SENT_TO"
