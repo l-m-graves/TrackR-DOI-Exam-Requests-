@@ -1,4 +1,4 @@
-"""Tests for DOI_Contacts.py - the contact directory. Invented people only."""
+"""Tests for doi_contacts.py - the contact directory. Invented people only."""
 import csv
 import shutil
 import tempfile
@@ -6,8 +6,8 @@ import unittest
 from datetime import datetime
 from pathlib import Path
 
-import DOI_Contacts as C
-from DOI_Filter import Mail
+import doi_contacts as C
+from doi_filter import Mail
 
 D1, D2 = datetime(2027, 10, 8), datetime(2027, 10, 15)
 

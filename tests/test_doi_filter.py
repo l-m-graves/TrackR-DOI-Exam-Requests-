@@ -1,4 +1,4 @@
-"""Tests for the rules in DOI_Filter.py - no Outlook needed.
+"""Tests for the rules in doi_filter.py - no Outlook needed.
 
 Run from the repo folder:  python -m unittest -v
 """
@@ -10,11 +10,11 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import DOI_Filter
-from DOI_Filter import (Mail, attachment_targets, extract, important_attachments, qualify,
+import doi_filter
+from doi_filter import (Mail, attachment_targets, extract, important_attachments, qualify,
                         save_attachments, subject_filter)
 
-# Pin the settings so a real Local_Settings.py on your laptop can't change test results.
+# Pin the settings so a real local_settings.py on your laptop can't change test results.
 TEST_SETTINGS = {
     "SENDER_DOMAINS": {"example.test"},
     "MUST_BE_SENT_TO": {"audit@example.test"},
@@ -39,7 +39,7 @@ def good_mail(**overrides):
 
 class QualifyTests(unittest.TestCase):
     def setUp(self):
-        patcher = mock.patch.multiple(DOI_Filter, **TEST_SETTINGS)
+        patcher = mock.patch.multiple(doi_filter, **TEST_SETTINGS)
         patcher.start()
         self.addCleanup(patcher.stop)
 
@@ -64,9 +64,9 @@ class QualifyTests(unittest.TestCase):
                 self.assertIn(reason, why)
 
     def test_domain_written_with_at_sign_or_capitals_still_matches(self):
-        domains = DOI_Filter.normalize_domains({"@Example.TEST", " insurance.ca.gov "})
+        domains = doi_filter.normalize_domains({"@Example.TEST", " insurance.ca.gov "})
         self.assertEqual(domains, {"example.test", "insurance.ca.gov"})
-        with mock.patch.object(DOI_Filter, "SENDER_DOMAINS", domains):
+        with mock.patch.object(doi_filter, "SENDER_DOMAINS", domains):
             self.assertTrue(qualify(good_mail(sender="Examiner@EXAMPLE.test"))[0])
 
     def test_individually_approved_sender_passes(self):
@@ -75,7 +75,7 @@ class QualifyTests(unittest.TestCase):
         self.assertEqual(qualify(m, approved_senders={"coordinator@other.test"}), (True, "DOI-TEST-60"))
 
     def test_recipient_rule_skipped_when_setting_is_empty(self):
-        with mock.patch.object(DOI_Filter, "MUST_BE_SENT_TO", set()):
+        with mock.patch.object(doi_filter, "MUST_BE_SENT_TO", set()):
             self.assertTrue(qualify(good_mail(to=["assigned.contact@example.test"], cc=[]))[0])
 
     def test_cc_counts_as_addressed(self):

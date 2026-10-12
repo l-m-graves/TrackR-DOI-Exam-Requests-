@@ -19,23 +19,25 @@ A Python tool that reads Department of Insurance (DOI) exam-request emails from 
 |---|---|
 | `DOI_Exam_Tracker_1.0.xlsx` | The live tracker (target of all writes). **Real data — never upload it to Claude**; share structure only |
 | `DOI_Exam_Test_Tracker_v2.xlsx` | Fake-data copy (`DOI-TEST-##`, `example.test`) — safe test fixture |
-| `DOI_Filter.py` | Outlook fetch + qualification rules; settings block holds placeholders only |
-| `Local_Settings.py` | Real paths/addresses, overrides `DOI_Filter` settings. **Git-ignored**; template in `Local_Settings_Example.py` |
-| `Upsert_Tracker.py` | Write/update tracker rows |
-| `DOI_Contacts.py` | Contact directory `DOI_Contacts.csv` (`CONTACTS_PATH`): records every Sender/To/CC on request emails each run; senders are trusted only once the user types `Y` in Approved |
-| `Publish.py` | Publishes a view-only, Excel-recalculated copy to `PUBLISH_PATH` for coworkers |
-| `Import_Original.py` | One-time: rebuild the original request list (sheet `Requests`) in the tracker template's format → new file + `_Import_Log.csv`. Run locally on real data |
-| `Run.py` | Entry point: fetch (+ save attachments) → qualify → upsert → publish → CSV log (`--days N`, `--dry-run`). `write_log()` creates the CSV + folder on first use; if the log is locked (open in Excel) it writes a dated fallback CSV instead of losing the run |
+| `doi_filter.py` | Outlook fetch + qualification rules; settings block holds placeholders only |
+| `local_settings.py` | Real paths/addresses, overrides `doi_filter` settings. **Git-ignored**; template in `local_settings.example.py` |
+| `upsert_tracker.py` | Write/update tracker rows |
+| `doi_contacts.py` | Contact directory `DOI_Contacts.csv` (`CONTACTS_PATH`): records every Sender/To/CC on request emails each run; senders are trusted only once the user types `Y` in Approved |
+| `publish.py` | Publishes a view-only, Excel-recalculated copy to `PUBLISH_PATH` for coworkers |
+| `import_original.py` | One-time: rebuild the original request list (sheet `Requests`) in the tracker template's format → new file + `_Import_Log.csv`. Run locally on real data |
+| `run.py` | Entry point: fetch (+ save attachments) → qualify → upsert → publish → CSV log (`--days N`, `--dry-run`). `write_log()` creates the CSV + folder on first use; if the log is locked (open in Excel) it writes a dated fallback CSV instead of losing the run |
 | `tests/` | `python -m unittest -v` (test files stay `test_*.py` — unittest discovery looks for that pattern). Upsert tests need a fake-data tracker at `tests/fixtures/DOI_Exam_Test_Tracker_v2.xlsx` or `$DOI_TRACKER_FIXTURE`; skipped otherwise. `*.xlsx` is git-ignored — don't commit workbooks |
 
 ## Naming convention
 
-Files are **Title_Case with underscores**: `DOI_Filter.py`, `Upsert_Tracker.py`, `DOI_Run_Log.csv`, `DOI_Contacts.csv`, `Backups/`, `*_Import_Log.csv`. Acronyms stay upper-case (`DOI_`). Exceptions, on purpose: `tests/test_*.py` (unittest discovery), `CLAUDE.md` / `.gitignore` (names tools look for), and saved attachments keep the sender's original file name (evidence fidelity) behind a date prefix. `DOI_Filter` still falls back to an old lower-case `local_settings.py` with a rename reminder.
+**Saved files** — anything the script writes to the company network / OneDrive — are **Title_Case with underscores**: `DOI_Run_Log.csv` (+ dated fallbacks `DOI_Run_Log_YYYYMMDD_HHMMSS.csv`), `DOI_Contacts.csv`, `Backups/`, `<Tracker>_<timestamp>.xlsx` backups, `*_Import_Log.csv`, `DOI_Exam_Tracker_View_Only.xlsx`, `DOI_Attachments/`. Acronyms stay upper-case (`DOI_`). Saved attachments keep the sender's original file name (evidence fidelity) behind a date prefix, inside a `<RequestID>` folder.
+
+**Python files** follow normal Python style (PEP 8): lower-case `snake_case.py` — `doi_filter.py`, `run.py`, … The convention does not apply to code. `doi_filter` also loads a `Local_Settings.py` (left over from a brief Title_Case rename) with a reminder to rename it back.
 
 ## Architecture
 
 ```
-Outlook (COM) ──Restrict()──> extract() ──> Mail dataclass ──> qualify() ──> Upsert_Tracker()
+Outlook (COM) ──Restrict()──> extract() ──> Mail dataclass ──> qualify() ──> upsert_tracker()
    coarse filter in Outlook     only COM-touching fn    plain Python     returns (ok, reason)
 ```
 
@@ -43,7 +45,7 @@ Outlook (COM) ──Restrict()──> extract() ──> Mail dataclass ──> q
 - `qualify(m) -> (bool, str)`: every rejection returns a reason string. Log rejections — that is the audit trail.
 - `Items.Restrict()` dialects can't be mixed: chain one Jet filter (`[ReceivedTime] >= '...'`) and one DASL filter (`@SQL=...`).
 
-## Qualification rules (in `DOI_Filter.py` settings block)
+## Qualification rules (in `doi_filter.py` settings block)
 
 An email qualifies only if **all** pass:
 1. Subject contains a Request ID matching `REQUEST_ID_PATTERN` = `\b(?:FIN|IT|DOI-[A-Z]+)-\d+\b` — real IDs are `FIN-##` and `IT-##`; `DOI-TEST-##` is test data only. A new prefix must be added to **both** `REQUEST_ID_PATTERN` and `SUBJECT_LIKES` (the Outlook DASL pre-filter, OR'd by `subject_filter()`), or those emails never reach Python
@@ -84,19 +86,19 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 | O | Notes / Latest Update | input, text | append only, never overwrite |
 
 - **Never write into formula columns** (A, E, F, H, J, N). When appending a row, copy formulas down from the first data row and extend `tblRequests.ref`.
-- Request ID formula = first word of column D with `:` stripped (`FIN-52:` → `FIN-52`); shows `(no ID)` if that word has no digit. `Upsert_Tracker.first_word_id()` is its Python twin — keep them in step. Type = contains "Follow". Follows Up On = ID before `Follow-up`/`Follow Up`, handling `FIN-27` and `FIN 45` → `FIN-45`; blank if the follow-up is to a non-ID (e.g. an interview).
+- Request ID formula = first word of column D with `:` stripped (`FIN-52:` → `FIN-52`); shows `(no ID)` if that word has no digit. `upsert_tracker.first_word_id()` is its Python twin — keep them in step. Type = contains "Follow". Follows Up On = ID before `Follow-up`/`Follow Up`, handling `FIN-27` and `FIN 45` → `FIN-45`; blank if the follow-up is to a non-ID (e.g. an interview).
 - Live data (since 2026-10-12): 18 real requests, two assignees on Lists. Due dates given as text ("ASAP") go to Notes, never into column G (keeps date math numeric).
-- **Known workbook bug:** `StatusList` = `OFFSET(Lists!$A$4,…,COUNTA(Lists!$A$4:$A$60))` also counts the help text that starts at Lists!A14, so the Status dropdown shows blanks and help paragraphs. Fix: count `$A$4:$A$12` instead. Code reads Lists columns only down to the first blank (`Import_Original.list_block`).
+- **Known workbook bug:** `StatusList` = `OFFSET(Lists!$A$4,…,COUNTA(Lists!$A$4:$A$60))` also counts the help text that starts at Lists!A14, so the Status dropdown shows blanks and help paragraphs. Fix: count `$A$4:$A$12` instead. Code reads Lists columns only down to the first blank (`import_original.list_block`).
 - **Sheet Summary**: settings `C5` AsOf (`=TODAY()`), `C6` FollowUpDays, `C7` DueSoonDays; KPIs and breakdowns via named ranges (`trkStatus`, `trkDue`, `trkRequest`, … all rows 4:1000).
 - **Sheet Lists**: dropdown sources via dynamic names `StatusList` (A4↓) and `AssigneeList` (D4↓).
 
-## Contact directory (`DOI_Contacts.py`)
+## Contact directory (`doi_contacts.py`)
 
 - Each run, for every fetched email whose subject has a request ID (accepted or rejected), `observe()` adds/updates Sender/To/CC rows: Email, Name, Domain, Roles, Request_IDs, First_Seen, Last_Seen. Columns **Approved** and **Notes** belong to the user and are never changed — team-meeting contacts are added there by hand (Approved = Y).
 - `pending_senders()` = senders not yet approved; listed first in the CSV and counted in the run output. Locked CSV → not saved, logged, re-recorded next run (observation is idempotent). `--dry-run` reports but doesn't save.
 - Request progress from meetings goes into the tracker by hand (Status, Notes); the script never overwrites typed values.
 
-## Upsert logic (`Upsert_Tracker.py`)
+## Upsert logic (`upsert_tracker.py`)
 
 - Key = Request ID from subject regex, matched against the first word of column D (same rule as column A's formula). New ID → append row under `tblRequests`: formulas and styles copied from the **first** data row (not the row above — a stray bottom row must not spread), `tbl.ref` + autoFilter extended. D gets RE:/FW: stripped and the ID forced to be the first word.
 - Existing ID → C keeps the **earliest** received date; L filled only if blank (never overwrites typed contacts); O gets one appended line per email ending `[ref xxxxxxxx]` (first 8 hex of SHA-1 of EntryID).
@@ -106,13 +108,13 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 - Not yet done: M (Last Email Sent, needs Sent Items lookup by `ConversationID`) and G (Due Date parsing). Neither is written by the script yet.
 - `extract()` strips pywin32's timezone tag from `ReceivedTime` — openpyxl rejects tz-aware datetimes.
 
-## Importing the original request list (`Import_Original.py`)
+## Importing the original request list (`import_original.py`)
 
 - The original list holds real names/addresses: **never upload it to Claude** — the user runs the importer locally. Tests build a fake original mimicking its quirks (colon after ID, en dash, `ABC 27 Follow up`, missing ID, free-text Status, `TBD` due date).
 - Maps by header name: Assigned to→B, Initial Request Email Received→C, Request Name→D, Due Date→G, Status→I, Completion Date→K, Contact→L, Last Email Sent→M. Template's example rows are replaced; new assignees appended to Lists!D.
 - D is tidied so the formulas parse it; free-text Status and non-date Due Date go to Notes with Status left blank. Every change/undecidable item is printed and logged per row — nothing is silently guessed. Never overwrites an existing output.
 
-## Sharing with coworkers (`Publish.py`)
+## Sharing with coworkers (`publish.py`)
 
 - The user's tracker (`TRACKER_PATH`) is the single source of truth; only the script and the user edit it. Coworkers only **view** a copy at `PUBLISH_PATH` (unset = no publishing). Their edits to the copy are overwritten — don't build two-way sync.
 - Publishes when the master is newer than the copy (so the user's own manual edits go out too), even if the upsert was refused because the master was open.

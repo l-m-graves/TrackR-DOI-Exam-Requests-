@@ -10,10 +10,10 @@ from datetime import datetime
 from pathlib import Path
 
 # --- settings --------------------------------------------------------------
-# Placeholders only. Put your real paths/addresses in Local_Settings.py (git-ignored,
-# see Local_Settings_Example.py) so they never get committed to GitHub.
+# Placeholders only. Put your real paths/addresses in local_settings.py (git-ignored,
+# see local_settings.example.py) so they never get committed to GitHub.
 TRACKER_PATH = r"C:\Users\<you>\OneDrive - <Company>\Audit\DOI_Exam_Test_Tracker_v2.xlsx"
-ATTACH_DIR   = None    # folder for request attachments, e.g. r"C:\...\DOI Attachments"; None = don't save
+ATTACH_DIR   = None    # folder for request attachments, e.g. r"C:\...\DOI_Attachments"; None = don't save
 LOG_PATH     = r"C:\Users\<you>\OneDrive - <Company>\Audit\Logs\DOI_Run_Log.csv"
 PUBLISH_PATH = None    # view-only copy for coworkers, e.g. a shared folder; None = don't publish
 CONTACTS_PATH = None   # contact directory the script keeps up to date (DOI_Contacts.csv); None = off
@@ -33,15 +33,15 @@ ATTACH_TYPES    = (".pdf", ".doc", ".docx", ".png", ".xlsx")  # what ATTACH_DIR 
 SMTP_PROP = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E"   # PR_SMTP_ADDRESS
 
 try:
-    from Local_Settings import *    # noqa: F401,F403  - real values override the placeholders above
+    from local_settings import *    # noqa: F401,F403  - real values override the placeholders above
 except ImportError:
-    try:                            # older name, from before the Title_Case renaming
-        from local_settings import *    # noqa: F401,F403
-        print("Note: rename local_settings.py to Local_Settings.py (the old name still works for now).")
+    try:                            # in case it was renamed during the brief Title_Case period
+        from Local_Settings import *    # noqa: F401,F403
+        print("Note: rename Local_Settings.py back to local_settings.py (this name still works for now).")
     except ImportError:
         pass
 
-REQUEST_ID = re.compile(REQUEST_ID_PATTERN)     # compiled after Local_Settings so an override applies
+REQUEST_ID = re.compile(REQUEST_ID_PATTERN)     # compiled after local_settings so an override applies
 
 
 def normalize_domains(domains) -> set:

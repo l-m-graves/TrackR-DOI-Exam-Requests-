@@ -17,7 +17,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 
-from DOI_Filter import REQUEST_ID
+from doi_filter import REQUEST_ID
 
 SHEET = "DOI Exam Tracker"
 TABLE = "tblRequests"

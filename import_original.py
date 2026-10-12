@@ -1,6 +1,6 @@
 """One-time import: rebuild the original request list in the tracker's format.
 
-    python Import_Original.py ORIGINAL.xlsx TRACKER_TEMPLATE.xlsx OUTPUT.xlsx
+    python import_original.py ORIGINAL.xlsx TRACKER_TEMPLATE.xlsx OUTPUT.xlsx
 
 - ORIGINAL          the old list (sheet "Requests", one row per request, headers in row 1)
 - TRACKER_TEMPLATE  DOI_Exam_Test_Tracker_v2.xlsx - supplies the layout, formulas, dropdowns
@@ -22,7 +22,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 
-from Upsert_Tracker import LAST_ROW, SHEET, TABLE, _table_bounds, check_lossless, first_word_id
+from upsert_tracker import LAST_ROW, SHEET, TABLE, _table_bounds, check_lossless, first_word_id
 
 SOURCE_SHEET = "Requests"
 # original header (lower-case) -> tracker column
