@@ -107,20 +107,22 @@ def _index(ws, first, last) -> dict:
     return rows
 
 
-def _append_row(ws, tbl, last) -> int:
+def _append_row(ws, tbl, first, last) -> int:
     """Add a row under the table: copy formulas (shifted to the new row) and formatting
-    from the row above, then stretch the table to include it."""
+    from the FIRST data row, then stretch the table to include it. The first row is the
+    pattern - not the row above - so one badly formatted row at the bottom (e.g. a stray
+    entry typed straight into the table) doesn't spread to every new row."""
     new = last + 1
     if new > LAST_ROW:
         raise TrackerError(f"Tracker is full: named ranges stop at row {LAST_ROW}.")
     if any(ws.cell(new, c).value is not None for c in range(1, ws.max_column + 1)):
         raise TrackerError(f"Row {new} under the table is not empty - won't overwrite it.")
-    for src in ws[last]:
+    for src in ws[first]:
         dst = ws.cell(new, src.column)
         dst._style = copy(src._style)
         if isinstance(src.value, str) and src.value.startswith("="):
             dst.value = Translator(src.value, origin=src.coordinate).translate_formula(dst.coordinate)
-    ws.row_dimensions[new].height = ws.row_dimensions[last].height
+    ws.row_dimensions[new].height = ws.row_dimensions[first].height
     start = tbl.ref.split(":")[0]
     end_col = re.match(r"[A-Z]+", tbl.ref.split(":")[1]).group(0)
     tbl.ref = f"{start}:{end_col}{new}"
@@ -148,7 +150,7 @@ def upsert(path, accepted, backup_dir=None, dry_run=False) -> list:
         changes = []
 
         if row is None:
-            row = _append_row(ws, tbl, last)
+            row = _append_row(ws, tbl, first, last)
             last = rows[rid] = row
             ws[f"{COL_REQUEST}{row}"] = request_text(m.subject, rid)
             ws[f"{COL_STATUS}{row}"] = "Not Started"            # new rows only

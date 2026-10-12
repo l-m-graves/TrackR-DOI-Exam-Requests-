@@ -22,6 +22,7 @@ A Python tool that reads Department of Insurance (DOI) exam-request emails from 
 | `local_settings.py` | Real paths/addresses, overrides `doi_filter` settings. **Git-ignored**; template in `local_settings.example.py` |
 | `upsert_tracker.py` | Write/update tracker rows |
 | `publish.py` | Publishes a view-only, Excel-recalculated copy to `PUBLISH_PATH` for coworkers |
+| `import_original.py` | One-time: rebuild the original request list (sheet `Requests`) in the tracker template's format → new file + `_import_log.csv`. Run locally on real data |
 | `run.py` | Entry point: fetch → qualify → upsert → publish → CSV log (`--days N`, `--dry-run`) |
 | `tests/` | `python -m unittest -v`. Upsert tests need a fake-data tracker at `tests/fixtures/DOI_Exam_Test_Tracker_v2.xlsx` or `$DOI_TRACKER_FIXTURE`; skipped otherwise. `*.xlsx` is git-ignored — don't commit workbooks |
 
@@ -39,7 +40,7 @@ Outlook (COM) ──Restrict()──> extract() ──> Mail dataclass ──> q
 ## Qualification rules (in `doi_filter.py` settings block)
 
 An email qualifies only if **all** pass:
-1. Subject contains a Request ID matching `\bDOI-[A-Z]+-\d+\b`
+1. Subject contains a Request ID matching `REQUEST_ID_PATTERN` (default `\bDOI-[A-Z]+-\d+\b`). Real IDs may use another prefix: override `REQUEST_ID_PATTERN` **and** `SUBJECT_LIKE` (the Outlook DASL pre-filter) together in `local_settings.py`
 2. Sender domain in `SENDER_DOMAINS` (placeholder — user fills in the real DOI domain)
 3. `MUST_BE_SENT_TO` appears on To or CC
 4. Body contains one of `BODY_PHRASES`
@@ -83,13 +84,19 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 
 ## Upsert logic (`upsert_tracker.py`)
 
-- Key = Request ID from subject regex, matched against the first word of column D (same rule as column A's formula). New ID → append row under `tblRequests`: formulas translated down from the row above, styles copied, `tbl.ref` + autoFilter extended. D gets RE:/FW: stripped and the ID forced to be the first word.
+- Key = Request ID from subject regex, matched against the first word of column D (same rule as column A's formula). New ID → append row under `tblRequests`: formulas and styles copied from the **first** data row (not the row above — a stray bottom row must not spread), `tbl.ref` + autoFilter extended. D gets RE:/FW: stripped and the ID forced to be the first word.
 - Existing ID → C keeps the **earliest** received date; L filled only if blank (never overwrites typed contacts); O gets one appended line per email ending `[ref xxxxxxxx]` (first 8 hex of SHA-1 of EntryID).
 - Idempotent via that ref tag: an email whose ref is already in O is skipped. Nothing changed → no backup, no save.
 - Timestamped backup to `backups/` next to the tracker before every save.
 - openpyxl requires Excel closed: refuses if `~$<name>` exists or the file can't be opened r+b. Also refuses if the file has charts/images/slicers (openpyxl would delete them).
 - Not yet done: M (Last Email Sent, needs Sent Items lookup by `ConversationID`) and G (Due Date parsing). Neither is written by the script yet.
 - `extract()` strips pywin32's timezone tag from `ReceivedTime` — openpyxl rejects tz-aware datetimes.
+
+## Importing the original request list (`import_original.py`)
+
+- The original list holds real names/addresses: **never upload it to Claude** — the user runs the importer locally. Tests build a fake original mimicking its quirks (colon after ID, en dash, `ABC 27 Follow up`, missing ID, free-text Status, `TBD` due date).
+- Maps by header name: Assigned to→B, Initial Request Email Received→C, Request Name→D, Due Date→G, Status→I, Completion Date→K, Contact→L, Last Email Sent→M. Template's example rows are replaced; new assignees appended to Lists!D.
+- D is tidied so the formulas parse it; free-text Status and non-date Due Date go to Notes with Status left blank. Every change/undecidable item is printed and logged per row — nothing is silently guessed. Never overwrites an existing output.
 
 ## Sharing with coworkers (`publish.py`)
 

@@ -64,6 +64,10 @@ class UpsertTests(unittest.TestCase):
     def table_ref(self):
         return self.sheet().tables[TABLE].ref
 
+    def row_of(self, rid):
+        ws = self.sheet()
+        return next(r for r in range(4, ws.max_row + 1) if str(ws[f"D{r}"].value or "").startswith(rid + " "))
+
     # --- new rows ---------------------------------------------------------------
     def test_new_id_appends_row_with_formulas_and_extends_table(self):
         before = self.table_ref()
@@ -83,7 +87,7 @@ class UpsertTests(unittest.TestCase):
             self.assertNotIn(f"$D{r - 1}", ws[f"{col}{r}"].value)
         # inputs
         self.assertEqual(ws[f"C{r}"].value, datetime(2027, 10, 8))           # date only, like the sheet
-        self.assertEqual(ws[f"C{r}"].number_format, "m/d/yyyy")              # style copied
+        self.assertEqual(ws[f"C{r}"].number_format, ws["C4"].number_format)  # style copied from first row
         self.assertEqual(ws[f"D{r}"].value, "DOI-TEST-60 Request - Claims Handling")
         self.assertEqual(ws[f"I{r}"].value, "Not Started")
         self.assertEqual(ws[f"L{r}"].value, "Jordan Lee <examiner@example.test>")
@@ -110,23 +114,24 @@ class UpsertTests(unittest.TestCase):
     # --- existing rows ----------------------------------------------------------
     def test_existing_id_appends_note_and_keeps_everything_else(self):
         ws0 = self.sheet()
-        old = {c: ws0[f"{c}10"].value for c in "BCDGILMO"}
-        self.assertTrue(old["D"].startswith("DOI-TEST-50 "))
+        n = self.row_of("DOI-TEST-50")
+        ref_before = self.table_ref()
+        old = {c: ws0[f"{c}{n}"].value for c in "BCDGILMO"}
         m = mail("RE: DOI-TEST-50 Request - Technology Risk Review", datetime(2027, 10, 9, 16, 0), "FAKE50",
                  sender="someone.else@example.test", name="Someone Else")
         [a] = self.run_upsert([m])
-        self.assertEqual((a["action"], a["row"], a["changes"]), ("updated", 10, "note"))
+        self.assertEqual((a["action"], a["row"], a["changes"]), ("updated", n, "note"))
         ws = self.sheet()
         for c in "BCDGILM":
-            self.assertEqual(ws[f"{c}10"].value, old[c], c)                  # untouched
-        self.assertTrue(ws["O10"].value.startswith(old["O"] + "\n"))         # appended, not overwritten
-        self.assertIn("[" + note_ref("FAKE50") + "]", ws["O10"].value)
-        self.assertEqual(self.table_ref(), "A3:O11")                         # no new row
+            self.assertEqual(ws[f"{c}{n}"].value, old[c], c)                  # untouched
+        self.assertTrue(ws[f"O{n}"].value.startswith(old["O"] + "\n"))         # appended, not overwritten
+        self.assertIn("[" + note_ref("FAKE50") + "]", ws[f"O{n}"].value)
+        self.assertEqual(self.table_ref(), ref_before)                         # no new row
 
     def test_earlier_email_moves_initial_received_back(self):
         [a] = self.run_upsert([mail("DOI-TEST-50 Request", datetime(2027, 10, 1, 8), "EARLY")])
         self.assertIn("received date", a["changes"])
-        self.assertEqual(self.sheet()["C10"].value, datetime(2027, 10, 1))
+        self.assertEqual(self.sheet()[f"C{self.row_of('DOI-TEST-50')}"].value, datetime(2027, 10, 1))
 
     # --- idempotency, backups, safety ------------------------------------------
     def test_second_run_changes_nothing_and_makes_no_backup(self):
