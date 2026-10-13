@@ -13,7 +13,7 @@ from datetime import date, datetime, timedelta
 
 QUOTE_START = re.compile(r"^\s*(-{2,}\s*Original Message|_{10,}\s*$|From:\s|On .{5,80} wrote:\s*$)",
                          re.I | re.M)
-CUE = re.compile(r"\b(due(?: date)?|deadline|respond|responses?|reply|no later than|on or before|"
+CUE = re.compile(r"\b(due(?: date)?|deadline|extension|extended|respond|responses?|reply|no later than|on or before|"
                  r"submit(?:ted)?\s+by|provid(?:e|ing)\b[^.\n]{0,60}?\bby|return(?:ed)?\s+by)\b", re.I)
 # Status updates promise a delivery date - that is NOT the DOI's due date, so it has its own cue.
 EXPECT_CUE = re.compile(r"\bexpect(?:s|ed)?\b[^.\n]{0,80}?\bby\b", re.I)
@@ -60,23 +60,34 @@ def _dates_in(text, received: datetime) -> list:
     return out
 
 
-def find_due(body: str, received: datetime, cue_pattern=CUE) -> dict:
-    """{'date': date or None, 'note': str or None}. Never both a date and a doubt."""
-    text = strip_quoted(body)
-    dates, texts = [], []
+def _sentence(text, pos) -> str:
+    """The sentence around a match, for the log's 'where did this date come from' column."""
+    start = max(text.rfind(". ", 0, pos), text.rfind("\n", 0, pos)) + 1
+    ends = [i for i in (text.find(". ", pos), text.find("\n", pos)) if i != -1]
+    return " ".join(text[start: min(ends) + 1 if ends else len(text)].split())[:200]
+
+
+def find_due(body: str, received: datetime, cue_pattern=CUE, strip=True) -> dict:
+    """{'date': date or None, 'note': str or None, 'evidence': sentence, 'dates': all found}.
+    Never both a date and a doubt. strip=False reads the whole text (e.g. a forwarded part)."""
+    text = strip_quoted(body) if strip else (body or "")
+    dates, texts, evidence = [], [], {}
     for cue in cue_pattern.finditer(text):
         window = text[cue.start(): cue.end() + WINDOW].split("\n\n")[0]
-        dates += _dates_in(window, received)
+        for d in _dates_in(window, received):
+            dates.append(d)
+            evidence.setdefault(d, _sentence(text, cue.start()))
         texts += [t.group(0) for t in TEXT_DUE.finditer(window)]
     distinct = sorted(set(dates))
+    result = {"date": None, "note": None, "evidence": "", "dates": distinct}
     if len(distinct) == 1:
-        return {"date": distinct[0], "note": None}
-    if len(distinct) > 1:
+        result.update(date=distinct[0], evidence=evidence[distinct[0]])
+    elif len(distinct) > 1:
         listed = ", ".join(f"{d:%Y-%m-%d}" for d in distinct)
-        return {"date": None, "note": f"several due dates in email ({listed}) - Due Date left for you"}
-    if texts:
-        return {"date": None, "note": f"due: {texts[0]}"}
-    return {"date": None, "note": None}
+        result["note"] = f"several due dates in email ({listed}) - Due Date left for you"
+    elif texts:
+        result["note"] = f"due: {texts[0]}"
+    return result
 
 
 def find_expected(body: str, sent: datetime):

@@ -24,7 +24,7 @@ class FindDueTests(unittest.TestCase):
         }
         for body, expected in cases.items():
             with self.subTest(body=body):
-                self.assertEqual(due(body), {"date": expected, "note": None})
+                self.assertEqual((due(body)["date"], due(body)["note"]), (expected, None))
 
     def test_same_date_twice_is_still_one_date(self):
         self.assertEqual(due("Due 10/15/2027. Again: responses due October 15, 2027.")["date"], date(2027, 10, 15))
@@ -35,12 +35,12 @@ class FindDueTests(unittest.TestCase):
         self.assertIn("2027-10-15, 2027-10-29", r["note"])
 
     def test_text_due_dates_become_a_note(self):
-        self.assertEqual(due("Please respond ASAP."), {"date": None, "note": "due: ASAP"})
+        self.assertEqual((due("Please respond ASAP.")["date"], due("Please respond ASAP.")["note"]), (None, "due: ASAP"))
         self.assertEqual(due("Due date: TBD")["note"], "due: TBD")
 
     def test_dates_without_due_wording_are_ignored(self):
-        self.assertEqual(due("Following our meeting on 10/01/2027, attached is the request."),
-                         {"date": None, "note": None})
+        r = due("Following our meeting on 10/01/2027, attached is the request.")
+        self.assertEqual((r["date"], r["note"]), (None, None))
 
     def test_quoted_history_is_ignored(self):
         body = ("Thanks - the revised response is due 10/20/2027.\n\n"
@@ -58,8 +58,13 @@ class FindDueTests(unittest.TestCase):
         self.assertEqual(r["date"], date(2028, 1, 10))
 
     def test_empty_body(self):
-        self.assertEqual(find_due("", RECEIVED), {"date": None, "note": None})
-        self.assertEqual(find_due(None, RECEIVED), {"date": None, "note": None})
+        for body in ("", None):
+            r = find_due(body, RECEIVED)
+            self.assertEqual((r["date"], r["note"]), (None, None))
+
+    def test_evidence_is_the_sentence_the_date_came_from(self):
+        r = due("Hello. Please provide the schedules by October 15, 2027. Thanks.")
+        self.assertEqual(r["evidence"], "Please provide the schedules by October 15, 2027.")
 
 
 if __name__ == "__main__":

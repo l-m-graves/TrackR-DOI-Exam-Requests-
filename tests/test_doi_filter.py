@@ -93,12 +93,14 @@ class QualifyTests(unittest.TestCase):
             with self.subTest(subject=subject):
                 self.assertEqual(qualify(good_mail(subject=subject)), (False, "subject has no request ID"))
 
-    def test_outlook_prefilter_covers_every_prefix(self):
+    def test_outlook_prefilter_covers_every_prefix_without_needing_attachments(self):
         f = subject_filter()
         for prefix in ("%FIN-%", "%IT-%", "%DOI-%"):
-            self.assertIn(f"LIKE '{prefix}'", f)
-        self.assertTrue(f.startswith("@SQL=("))
-        self.assertTrue(f.endswith(') AND "urn:schemas:httpmail:hasattachment" = 1'))
+            self.assertIn(f'"urn:schemas:httpmail:subject" LIKE \'{prefix}\'', f)
+            self.assertIn(f'"urn:schemas:httpmail:textdescription" LIKE \'{prefix}\'', f)   # ID only in body
+        self.assertIn("LIKE '%Examination%'", f)
+        self.assertTrue(f.startswith("@SQL="))
+        self.assertNotIn("hasattachment", f)          # CC'd status emails / forwards often have none
 
     def test_lowercase_id_is_not_a_request_id(self):
         self.assertFalse(qualify(good_mail(subject="doi-test-60 request"))[0])

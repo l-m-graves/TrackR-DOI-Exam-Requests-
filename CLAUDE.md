@@ -6,6 +6,8 @@ Context for Claude Code working in this repo. Read before changing anything.
 
 A Python tool that reads Department of Insurance (DOI) exam-request emails from **classic Outlook** on a Mercury Insurance work laptop, validates them, and writes/updates rows in `DOI_Exam_Test_Tracker_v2.xlsx`. Built by an accounting intern learning Python — explain the *why* behind changes, not just the fix.
 
+**Who runs it:** a Finance Intern supporting the accountants. They are usually **CC'd or forwarded**, rarely the sender or responder, and may never see the examiner's original email. Never assume a message to them means they must do the work, never write emails in their voice. The tool is **read-only towards Outlook**: it never sends, replies, forwards, moves or deletes.
+
 ## Hard constraints (do not work around these)
 
 - **Runs locally only.** The work mailbox allows no AI or outside access. The script talks to the signed-in Outlook app via COM (`pywin32`) on the user's own machine. No Graph API, no IMAP, no cloud calls, no credentials in code.
@@ -22,12 +24,14 @@ A Python tool that reads Department of Insurance (DOI) exam-request emails from 
 | `doi_filter.py` | Outlook fetch + qualification rules; settings block holds placeholders only |
 | `local_settings.py` | Real paths/addresses, overrides `doi_filter` settings. **Git-ignored**; template in `local_settings.example.py` |
 | `upsert_tracker.py` | Write/update tracker rows |
+| `doi_analysis.py` | `detect()` → accept / review / reject + confidence + reasons; `analyze()` → dates by who stated them, items, scope, departments, events, follow-up link, people. Pure Python |
+| `attachment_text.py` | `read_text()` for saved attachments: .docx (stdlib), .xlsx (openpyxl), .pdf (optional `pypdf`); anything else / failures → status `not read - …` → review |
 | `email_types.py` | Recognises the team's five email templates (`classify()`) and the topic in `DOI Exam Request FIN-53 – Topic` subjects; says which types create rows, carry the due date, or move Status to In Progress |
 | `due_dates.py` | `find_due(body, received)`: one clear due date near due wording → date; several dates / ASAP / TBD → note only. Strips quoted reply history first |
 | `doi_contacts.py` | Contact directory `DOI_Contacts.csv` (`CONTACTS_PATH`): records every Sender/To/CC on request emails each run; senders are trusted only once the user types `Y` in Approved |
 | `publish.py` | Publishes a view-only, Excel-recalculated copy to `PUBLISH_PATH` for coworkers |
 | `import_original.py` | One-time: rebuild the original request list (sheet `Requests`) in the tracker template's format → new file + `_Import_Log.csv`. Run locally on real data |
-| `run.py` | Entry point: fetch (+ save attachments) → qualify → upsert → publish → CSV log (`--days N`, `--dry-run`). `write_log()` creates the CSV + folder on first use; if the log is locked (open in Excel) it writes a dated fallback CSV instead of losing the run |
+| `run.py` | Entry point: fetch (+ save/read attachments) → detect → analyze → upsert → publish → CSV log (`--days N`, `--dry-run`). Log columns: `run_at, result, request_id, topic, classification, confidence, signals, message_id, conversation_id, current_sender, original_sender, received, ref, subject, exam_due_date, internal_expected_date, tracking_due_date, date_source, date_evidence, attachments, xlsx_update, detail, review_reason`; an older-format log is renamed `*_Old_Format_<ts>.csv`. `write_log()` creates the CSV + folder on first use; if the log is locked (open in Excel) it writes a dated fallback CSV instead of losing the run |
 | `tests/` | `python -m unittest -v` (test files stay `test_*.py` — unittest discovery looks for that pattern). Upsert tests need a fake-data tracker at `tests/fixtures/DOI_Exam_Test_Tracker_v2.xlsx` or `$DOI_TRACKER_FIXTURE`; skipped otherwise. `*.xlsx` is git-ignored — don't commit workbooks |
 
 ## Naming convention
@@ -43,9 +47,21 @@ Outlook (COM) ──Restrict()──> extract() ──> Mail dataclass ──> q
    coarse filter in Outlook     only COM-touching fn    plain Python     returns (ok, reason)
 ```
 
-- COM is confined to small functions in `doi_filter.py`: `extract(msg) -> Mail`, `extract_sent(msg) -> SentMail`, `save_attachments()`, and the `fetch_*` / `_outlook()` wrappers (plus `publish.excel_recalc`). Everything downstream works on plain dataclasses so it can be unit-tested with fake objects.
+- COM is confined to small functions in `doi_filter.py`: `extract(msg) -> Mail`, `extract_sent(msg) -> SentMail`, `save_attachments()` / `read_attachments()`, and the `fetch_*` / `_outlook()` wrappers (plus `publish.excel_recalc`). `fetch_candidates()` returns `(accepted, rejected, review)`; attachments of non-rejected emails are saved (or, without `ATTACH_DIR`, put in a temp folder) and read, then the email is detected again with their text. Files saved before an ID is known go to `ATTACH_DIR\_Review\`. Everything downstream works on plain dataclasses so it can be unit-tested with fake objects.
 - `qualify(m) -> (bool, str)`: every rejection returns a reason string. Log rejections — that is the audit trail.
 - `Items.Restrict()` dialects can't be mixed: chain one Jet filter (`[ReceivedTime] >= '...'`) and one DASL filter (`@SQL=...`).
+
+## Roles (source of truth: `local_settings.py`)
+
+`LEAD_EXAMINERS`, `EXAMINER_CONTACTS`, `EXAMINER_DOMAINS` (+ legacy `SENDER_DOMAINS`), `THIRD_PARTY_CONTACTS`, `THIRD_PARTY_DOMAINS`, `ACCOUNTANT_CONTACTS`, `INTERNAL_DOMAINS`, optional `ENTITY_NAMES`, `PRODUCT_NAMES`. `doi_filter.role_of(address)` → lead_examiner / examiner / third_party / accountant / internal / approved (DOI_Contacts Y) / unknown. Examiner side = first three; internal side = accountant, internal. **No names or addresses anywhere else in code.** The user's real `local_settings.py` may name these differently — ask for the variable *names* (never values) and map them.
+
+## Detection (`doi_analysis.detect`)
+
+The five rules below still accept on their own (high). Otherwise signals decide: request ID anywhere (subject → message parts → attachment text), current sender's role, **original sender inside a forward** (`segments()` splits `From:` + `Sent:/To:/Subject:` header blocks), DOI wording (`DOI_TERMS`). Examiner-side origin + ID + DOI wording → accept high; internal sender + ID + DOI wording → accept medium; ID + DOI wording from an unconfigured sender, or examiner-side with no ID → **review**; no ID and not examiner-side, or an ID with no DOI wording → reject. `MUST_BE_SENT_TO`, if set, stays a hard rule. Review items are logged (result `review`) and never written to the tracker. Outlook pre-filter (`subject_filter`) no longer requires attachments and also matches ID prefixes in the body.
+
+## Dates (`doi_analysis.analyze`)
+
+Separate values: `exam_due_date` (examiner side: own words, forwarded part, or a request-named attachment when the thread is examiner/internal), `internal_expected_date` (anything an internal person states, incl. "we expect … by"), `tracking_due_date` (= exam due, else internal as fallback), `date_source`, `date_confidence` (high = examiner's own words, medium = forwarded/attachment, low = internal fallback), `date_evidence` (the sentence). Several distinct examiner dates, several internal dates, or dates from unconfigured senders → review, nothing chosen. G is written only if empty; a different tracking date → review note, never overwritten; an internal fallback in G is labelled in Notes.
 
 ## Qualification rules (in `doi_filter.py` settings block)
 
@@ -96,12 +112,12 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 
 ## Team email templates (`email_types.py`)
 
-Examples (invented values) live in `tests/fake_templates.py`. Classification reads the subject plus the **new** part of the body (quoted history stripped):
+These templates are **one signal, not the full set** of DOI correspondence; direction is not assumed (the user is usually CC'd). Examples (invented values) live in `tests/fake_templates.py`; broader invented correspondence (direct, forwarded, CC-only, internal payroll request, conflicting dates, attachment-only details, numbered items, scope, follow-ups, events, false positives) in `tests/fake_doi_emails.py`. Classification reads the subject plus the **new** part of the body (quoted history stripped):
 
 | Type | Typical direction | Subject / body marker | Tracker effect |
 |---|---|---|---|
 | assignment | received | body "has issued examination request" | may create the row; D = `ID Request - Topic`; G from "provide … by"; L = To list |
-| acknowledgment | sent | body "We received the DOI exam request" | Status → In Progress; restated due date checked against G |
+| acknowledgment | either | body "We received the DOI exam request" | Status → In Progress; restated due date checked against G |
 | status_update | sent | subject "Status Update" | Status → In Progress; "expect to provide … by <date>" → note `expects to provide by`, **never G** |
 | response_materials | sent | subject "Response Materials" | Status → In Progress; note |
 | scope_question | sent | subject "Question Regarding …" / body "confirm the scope" | Status → In Progress; note |

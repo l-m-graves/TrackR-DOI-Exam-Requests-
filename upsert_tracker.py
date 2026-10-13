@@ -21,6 +21,7 @@ from doi_filter import REQUEST_ID
 from due_dates import find_due, find_expected
 from email_types import (ADVANCES_TO_IN_PROGRESS, CREATES_ROW, DUE_DATE_KINDS, LABEL,
                          classify, topic_from_subject)
+from doi_analysis import analyze
 
 SHEET = "DOI Exam Tracker"
 TABLE = "tblRequests"
@@ -88,10 +89,11 @@ def _day(value):
     return None
 
 
-def contact(m, kind: str = "other") -> str:
-    """Who the request's contact is. An assignment email names them on its To line
-    ("I have assigned the request items to you"); otherwise it's the sender."""
-    if kind == "assignment" and m.to:
+def contact(m, kind: str = "other", asked=None) -> str:
+    """Who the request's contact is. When an internal coordinator assigns or asks for
+    information, it's the people on the To line (the ones being asked) - the person running
+    this may only be CC'd. Otherwise it's the sender."""
+    if (kind == "assignment" or asked) and m.to:
         return "; ".join(f"{m.names[a]} <{a}>" if m.names.get(a) else a for a in m.to)
     return f"{m.sender_name} <{m.sender}>" if m.sender_name else m.sender
 
@@ -230,9 +232,10 @@ def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None, sent=
     actions = []
     for m, rid in sorted(accepted, key=lambda x: x[0].received):   # oldest first
         ref = note_ref(m.entry_id)
-        kind = classify(m.subject, m.body)
+        an = m.analysis if m.analysis is not None else analyze(m, rid)
+        kind = an.kind
         row = rows.get(rid)
-        changes = []
+        changes, review = [], list(an.review)
 
         if row is None:
             if kind not in CREATES_ROW:                 # e.g. a status update for an unknown request
@@ -241,7 +244,10 @@ def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None, sent=
                 continue
             row = _append_row(ws, tbl, first, last)
             last = rows[rid] = row
-            ws[f"{COL_REQUEST}{row}"] = request_text(m.subject, rid)
+            text = request_text(m.subject, rid)
+            if an.parent_request_id and "follow" not in text.lower():     # feeds 'Follows Up On'
+                text = f"{text} - {an.parent_request_id} Follow-up"
+            ws[f"{COL_REQUEST}{row}"] = text
             ws[f"{COL_STATUS}{row}"] = "Not Started"            # new rows only
             changes.append("new row")
 
@@ -254,19 +260,29 @@ def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None, sent=
 
         # Contact: fill if blank; never replace what a person typed.
         if not ws[f"{COL_CONTACT}{row}"].value:
-            ws[f"{COL_CONTACT}{row}"] = contact(m, kind)
+            ws[f"{COL_CONTACT}{row}"] = contact(m, kind, an.asked)
             changes.append("contact")
 
-        # Due Date: only a single clear date, only into an EMPTY cell, and only from email types
-        # where a date means the DOI's deadline. Anything else is noted, never overwritten.
-        extra = _date_notes(ws, row, kind, m.body, m.received, changes)
+        # Due Date: the tracking date (examiner's deadline; else the internal expected date as a
+        # labelled fallback), only into an EMPTY cell. A different date is never chosen silently:
+        # it is noted and flagged for review.
+        extra = []
+        if an.tracking_due_date:
+            conflict = _due_date(ws, row, an.tracking_due_date, changes)
+            if conflict:
+                review.append(f"{conflict} ({an.date_source})")
+            elif "due date" in changes and an.date_source.startswith("internal"):
+                extra.append("Due Date set from the internal expected date - no examiner deadline seen yet")
+        an.review = review                                           # incl. any conflict just found
+        if an.summary():
+            extra.append(an.summary())
         _advance_status(ws, row, kind, changes)
 
         # Notes: append-only, one line per email, tagged so re-runs can tell it's done.
         _append_note(ws, row, ref, note_line(m, ref, "; ".join(extra), kind), changes)
 
         action = "added" if "new row" in changes else ("updated" if changes else "unchanged")
-        actions.append({"request_id": rid, "row": row, "action": action,
+        actions.append({"request_id": rid, "row": row, "action": action, "review": "; ".join(review),
                         "changes": ", ".join(changes), "ref": ref, "mail": m})
 
     # Emails you sent in the team's templates: progress notes and status, never new rows.

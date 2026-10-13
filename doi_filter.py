@@ -33,6 +33,18 @@ IGNORE_EXT      = (".png", ".gif", ".jpg", ".jpeg")           # rule 5 ignores i
 ATTACH_TYPES    = (".pdf", ".doc", ".docx", ".png", ".xlsx")  # what ATTACH_DIR saves from qualifying emails
 SMTP_PROP = "http://schemas.microsoft.com/mapi/proptag/0x39FE001E"   # PR_SMTP_ADDRESS
 
+# Who is who. The real values live ONLY in local_settings.py (addresses / domains, lower-case);
+# nothing else in the program names people. SENDER_DOMAINS above counts as examiner domains.
+LEAD_EXAMINERS       = set()   # the lead examiner's address(es) - kept separate on purpose
+EXAMINER_CONTACTS    = set()   # other examiner addresses
+EXAMINER_DOMAINS     = set()   # regulator domain(s)
+THIRD_PARTY_CONTACTS = set()   # examination-firm people working for the DOI
+THIRD_PARTY_DOMAINS  = set()   # examination-firm domain(s)
+ACCOUNTANT_CONTACTS  = set()   # internal accountants who coordinate requests
+INTERNAL_DOMAINS     = set()   # the company's own domain(s): any other employee
+ENTITY_NAMES         = ()      # legal-entity names to spot in request scope (optional)
+PRODUCT_NAMES        = ()      # product / line-of-business names to spot in scope (optional)
+
 try:
     from local_settings import *    # noqa: F401,F403  - real values override the placeholders above
 except ImportError:
@@ -51,13 +63,49 @@ def normalize_domains(domains) -> set:
 
 
 SENDER_DOMAINS = normalize_domains(SENDER_DOMAINS)
+EXAMINER_DOMAINS = normalize_domains(EXAMINER_DOMAINS)
+THIRD_PARTY_DOMAINS = normalize_domains(THIRD_PARTY_DOMAINS)
+INTERNAL_DOMAINS = normalize_domains(INTERNAL_DOMAINS)
+LEAD_EXAMINERS, EXAMINER_CONTACTS, THIRD_PARTY_CONTACTS, ACCOUNTANT_CONTACTS = (
+    {a.strip().lower() for a in group}
+    for group in (LEAD_EXAMINERS, EXAMINER_CONTACTS, THIRD_PARTY_CONTACTS, ACCOUNTANT_CONTACTS))
+
+EXAMINER_SIDE = {"lead_examiner", "examiner", "third_party"}
+INTERNAL_SIDE = {"accountant", "internal"}
+
+
+def role_of(address, approved=()) -> str:
+    """Which configured group an address belongs to (see the settings above). Pure."""
+    a = (address or "").strip().lower()
+    if "@" not in a:
+        return "unknown"
+    d = a.split("@")[-1]
+    if a in LEAD_EXAMINERS:
+        return "lead_examiner"
+    if a in EXAMINER_CONTACTS or d in EXAMINER_DOMAINS or d in SENDER_DOMAINS:
+        return "examiner"
+    if a in THIRD_PARTY_CONTACTS or d in THIRD_PARTY_DOMAINS:
+        return "third_party"
+    if a in ACCOUNTANT_CONTACTS:
+        return "accountant"
+    if d in INTERNAL_DOMAINS:
+        return "internal"
+    if a in approved:
+        return "approved"
+    return "unknown"
+
+
+SUBJECT_TERMS = ("%DOI%", "%Examination%", "%Exam Request%")   # DOI wording in a subject
 
 
 def subject_filter() -> str:
-    """DASL filter for Items.Restrict(): subject matches any prefix AND the email has attachments.
-    Deliberately loose ('%IT-%' also matches 'AUDIT-'); qualify() does the precise check."""
-    likes = " OR ".join(f'"urn:schemas:httpmail:subject" LIKE \'{p}\'' for p in SUBJECT_LIKES)
-    return f'@SQL=({likes}) AND "urn:schemas:httpmail:hasattachment" = 1'
+    """DASL filter for Items.Restrict(): a request-ID prefix in the subject or body, or DOI wording
+    in the subject. No attachment requirement - CC'd status emails and forwards often have none.
+    Deliberately loose ('%IT-%' also matches 'AUDIT-'); Python makes the real decision."""
+    subj, body = '"urn:schemas:httpmail:subject"', '"urn:schemas:httpmail:textdescription"'
+    likes = [f"{subj} LIKE '{p}'" for p in SUBJECT_LIKES + SUBJECT_TERMS]
+    likes += [f"{body} LIKE '{p}'" for p in SUBJECT_LIKES]
+    return "@SQL=" + " OR ".join(likes)
 
 
 # --- plain-Python view of a message (what the rules operate on) -----------
@@ -75,6 +123,10 @@ class Mail:
     saved: list = field(default_factory=list)   # attachment results ("saved <path>" / "FAILED ...")
     names: dict = field(default_factory=dict)   # address -> display name, for the contact directory
     conversation_id: str = ""       # Outlook's thread ID - links your replies in Sent Items
+    attachment_texts: dict = field(default_factory=dict)   # file name -> text read from it
+    attachment_status: list = field(default_factory=list)  # "<file>: read" / "<file>: not read - why"
+    detection: object = None        # doi_analysis.Detection
+    analysis: object = None         # doi_analysis.Analysis
 
 
 @dataclass
@@ -127,6 +179,22 @@ INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 INLINE_IMAGE = re.compile(r"^image\d{3}\.(png|jpe?g|gif)$", re.I)   # Outlook's names for logos pasted in a body
 
 
+def attachment_paths(rid: str, names, received: datetime, folder) -> list:
+    """Every attachment this program would keep, saved or not: [(outlook_index, path)]."""
+    plan = []
+    for index, name in enumerate(names, start=1):           # Outlook's Attachments are 1-based
+        if not name.lower().endswith(ATTACH_TYPES) or INLINE_IMAGE.match(name):
+            continue
+        safe = INVALID_CHARS.sub("_", name).strip(" .")
+        stem, dot, ext = safe.rpartition(".")
+        if dot and len(stem) > 100:                          # keep under Windows' 260-char path limit
+            safe = f"{stem[:100]}.{ext}"
+        dest = Path(folder) / rid / f"{received:%Y-%m-%d}_{safe}"
+        if dest not in [d for _, d in plan]:
+            plan.append((index, dest))
+    return plan
+
+
 def attachment_targets(rid: str, names, received: datetime, folder) -> list:
     """Which attachments to save, and where: [(outlook_index, destination), ...].
 
@@ -136,18 +204,7 @@ def attachment_targets(rid: str, names, received: datetime, folder) -> list:
     ATTACH_DIR / <RequestID> / <YYYY-MM-DD>_<file name> - one folder per request, the received date
     in front so a revised 'Request.pdf' on a later email doesn't collide with the first one.
     Already-saved files are skipped, so re-runs don't duplicate. Pure Python - no Outlook."""
-    targets = []
-    for index, name in enumerate(names, start=1):           # Outlook's Attachments are 1-based
-        if not name.lower().endswith(ATTACH_TYPES) or INLINE_IMAGE.match(name):
-            continue
-        safe = INVALID_CHARS.sub("_", name).strip(" .")
-        stem, dot, ext = safe.rpartition(".")
-        if dot and len(stem) > 100:                          # keep under Windows' 260-char path limit
-            safe = f"{stem[:100]}.{ext}"
-        dest = Path(folder) / rid / f"{received:%Y-%m-%d}_{safe}"
-        if not dest.exists() and dest not in [d for _, d in targets]:
-            targets.append((index, dest))
-    return targets
+    return [(i, dest) for i, dest in attachment_paths(rid, names, received, folder) if not dest.exists()]
 
 
 def save_attachments(msg, m: Mail, rid: str, folder) -> list:
@@ -241,22 +298,53 @@ def fetch_sent(since: datetime) -> list:
     return [extract_sent(msg) for msg in items if msg.Class == 43]
 
 
+def read_attachments(msg, m: Mail, rid: str, attach_dir=None) -> list:
+    """Save (if attach_dir) and read the email's attachments. Returns save results for the log;
+    fills m.attachment_texts / m.attachment_status. Without attach_dir the files go to a temp
+    folder just long enough to be read, so a dry run sees the same content as a real run."""
+    import tempfile
+    from attachment_text import read_text
+    work = attach_dir or tempfile.mkdtemp(prefix="doi_attach_")
+    saved = save_attachments(msg, m, rid, work)
+    for _, path in attachment_paths(rid, m.attachments, m.received, work):
+        if path.exists():
+            text, status = read_text(path)
+            m.attachment_status.append(f"{path.name}: {status}")
+            if text:
+                m.attachment_texts[path.name] = text
+    if not attach_dir:
+        import shutil
+        shutil.rmtree(work, ignore_errors=True)
+        return []
+    return saved
+
+
 def fetch_candidates(since: datetime, folder_path=("Inbox", "DOI Exam"), attach_dir=None, approved_senders=()):
-    """Coarse filter inside Outlook, then precise rules in Python. With attach_dir, qualifying
-    emails' request attachments are saved there (the Outlook item is only reachable here)."""
+    """Coarse filter inside Outlook, then the Python decision (doi_analysis.detect).
+    Returns (accepted, rejected, review):
+      accepted [(Mail, request_id)]  rejected [(Mail, reason)]  review [(Mail, Detection)].
+    Attachments of anything not rejected are saved/read here - the Outlook item is only
+    reachable in this function - and the email is judged again with their text."""
+    from doi_analysis import detect                              # pure module; imports this one
     folder = _outlook().GetDefaultFolder(6)                  # Inbox
     for name in folder_path[1:]:                             # walk into sub-folders by name
         folder = folder.Folders(name)
     items = folder.Items
     items = items.Restrict(f"[ReceivedTime] >= '{since:%m/%d/%Y} 12:00 AM'")     # Jet syntax
     items = items.Restrict(subject_filter())                                     # DASL syntax
-    accepted, rejected = [], []
+    accepted, rejected, review = [], [], []
     for msg in items:
         if msg.Class != 43:                                  # olMail only
             continue
         m = extract(msg)
-        ok, reason = qualify(m, approved_senders)
-        if ok and attach_dir:
-            m.saved = save_attachments(msg, m, reason, attach_dir)
-        (accepted if ok else rejected).append((m, reason))
-    return accepted, rejected
+        first = detect(m, approved_senders)
+        if first.status != "reject" and m.attachments:
+            m.saved = read_attachments(msg, m, first.request_id or "_Review", attach_dir)
+        m.detection = det = detect(m, approved_senders)      # again, now knowing the attachments
+        if det.status == "accept":
+            accepted.append((m, det.request_id))
+        elif det.status == "review":
+            review.append((m, det))
+        else:
+            rejected.append((m, det.reasons[0]))
+    return accepted, rejected, review
