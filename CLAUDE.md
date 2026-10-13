@@ -22,6 +22,7 @@ A Python tool that reads Department of Insurance (DOI) exam-request emails from 
 | `doi_filter.py` | Outlook fetch + qualification rules; settings block holds placeholders only |
 | `local_settings.py` | Real paths/addresses, overrides `doi_filter` settings. **Git-ignored**; template in `local_settings.example.py` |
 | `upsert_tracker.py` | Write/update tracker rows |
+| `email_types.py` | Recognises the team's five email templates (`classify()`) and the topic in `DOI Exam Request FIN-53 – Topic` subjects; says which types create rows, carry the due date, or move Status to In Progress |
 | `due_dates.py` | `find_due(body, received)`: one clear due date near due wording → date; several dates / ASAP / TBD → note only. Strips quoted reply history first |
 | `doi_contacts.py` | Contact directory `DOI_Contacts.csv` (`CONTACTS_PATH`): records every Sender/To/CC on request emails each run; senders are trusted only once the user types `Y` in Approved |
 | `publish.py` | Publishes a view-only, Excel-recalculated copy to `PUBLISH_PATH` for coworkers |
@@ -73,15 +74,15 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 | A | Request ID | formula (parsed from D) | **no** |
 | B | Assigned To | input, dropdown | optional |
 | C | Initial Request Received | input, date | yes ← `ReceivedTime` |
-| D | Initial Request | input, text | yes ← subject |
+| D | Initial Request | input, text | yes ← subject; template subjects become `FIN-53 Request - Topic` |
 | E | Type | formula | **no** |
 | F | Follows Up On | formula | **no** |
 | G | Due Date | input, date | yes, **only into an empty cell** and only one clear date (`due_dates.find_due`); a different stated date is noted in O, never overwritten |
 | H | Days Until Due | formula | **no** |
-| I | Status | input, dropdown | yes, `"Not Started"` for new rows only |
+| I | Status | input, dropdown | `"Not Started"` for new rows; **Not Started/blank → In Progress** when an acknowledgment, status update, scope question or response materials email is seen. Never changes any other status |
 | J | Action Flag | formula | **no** |
 | K | Completed On | input, date | no |
-| L | Contact | input, text | yes ← `Name <smtp>` |
+| L | Contact | input, text | yes, if blank ← assignment email's **To** list (the assignees), else the sender, as `Name <smtp>` |
 | M | Last Email Sent | input, date | yes ← newest Sent Items email whose subject has the ID or shares the request email's `ConversationID`; **only moves forward**; date only. `TRACK_SENT=False` turns off |
 | N | Days Since Last Email | formula | **no** |
 | O | Notes / Latest Update | input, text | append only, never overwrite |
@@ -92,6 +93,22 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 - **Known workbook bug:** `StatusList` = `OFFSET(Lists!$A$4,…,COUNTA(Lists!$A$4:$A$60))` also counts the help text that starts at Lists!A14, so the Status dropdown shows blanks and help paragraphs. Fix: count `$A$4:$A$12` instead. Code reads Lists columns only down to the first blank (`import_original.list_block`).
 - **Sheet Summary**: settings `C5` AsOf (`=TODAY()`), `C6` FollowUpDays, `C7` DueSoonDays; KPIs and breakdowns via named ranges (`trkStatus`, `trkDue`, `trkRequest`, … all rows 4:1000).
 - **Sheet Lists**: dropdown sources via dynamic names `StatusList` (A4↓) and `AssigneeList` (D4↓).
+
+## Team email templates (`email_types.py`)
+
+Examples (invented values) live in `tests/fake_templates.py`. Classification reads the subject plus the **new** part of the body (quoted history stripped):
+
+| Type | Typical direction | Subject / body marker | Tracker effect |
+|---|---|---|---|
+| assignment | received | body "has issued examination request" | may create the row; D = `ID Request - Topic`; G from "provide … by"; L = To list |
+| acknowledgment | sent | body "We received the DOI exam request" | Status → In Progress; restated due date checked against G |
+| status_update | sent | subject "Status Update" | Status → In Progress; "expect to provide … by <date>" → note `expects to provide by`, **never G** |
+| response_materials | sent | subject "Response Materials" | Status → In Progress; note |
+| scope_question | sent | subject "Question Regarding …" / body "confirm the scope" | Status → In Progress; note |
+| other | either | — | generic behaviour (may create row, due date from body) |
+
+- Only `assignment` and `other` create rows; any other type for an unknown ID is `skipped` and logged.
+- Sent emails are read from Sent Items (`fetch_sent`, now with body + EntryID), matched to a request by ID in subject or ConversationID (`match_sent`), and processed after received emails. Each gets a Notes line `YYYY-MM-DD <Type> sent: <subject> [ref …]`; the ref makes re-runs no-ops. `other` sent emails only count toward Last Email Sent.
 
 ## Contact directory (`doi_contacts.py`)
 

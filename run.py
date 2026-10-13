@@ -68,22 +68,23 @@ def main():
     print(f"{len(accepted)} qualified, {len(rejected)} rejected")
 
     log = [log_row(run_at, m, "rejected", reason) for m, reason in rejected]
-    last_sent = {}
+    last_sent, sent = {}, []
     if doi_filter.TRACK_SENT:                       # Sent Items -> Last Email Sent (column M)
         try:
-            sent = doi_filter.fetch_sent(since=run_at - timedelta(days=args.days))
-            last_sent = doi_filter.last_sent_by_request(sent, accepted)
+            sent = doi_filter.match_sent(doi_filter.fetch_sent(since=run_at - timedelta(days=args.days)), accepted)
+            last_sent = doi_filter.last_sent_by_request([x for x, _ in sent], accepted)
         except Exception as e:                      # never let Sent Items stop the main update
             print(f"Sent Items not read: {e}")
             log.append(run_row(run_at, "error", f"Sent Items not read: {e}"))
     try:
-        actions = upsert(doi_filter.TRACKER_PATH, accepted, dry_run=args.dry_run, last_sent=last_sent)
+        actions = upsert(doi_filter.TRACKER_PATH, accepted, dry_run=args.dry_run,
+                         last_sent=last_sent, sent=sent)
     except TrackerError as e:
         print(f"NOT WRITTEN: {e}")
         log += [log_row(run_at, m, "error", str(e)) for m, _ in accepted]
         actions = []
     for a in actions:
-        print(f"  {a['action']:9} {a['request_id']:<16} row {a['row']:<4} {a['changes']}")
+        print(f"  {a['action']:9} {a['request_id']:<16} row {str(a['row']):<4} {a['changes']}")
         detail = f"row {a['row']}: {a['changes']}"
         log.append(log_row(run_at, a["mail"], a["action"], detail) if a["mail"]
                    else run_row(run_at, a["action"], f"{a['request_id']} {detail}"))

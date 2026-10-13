@@ -13,8 +13,10 @@ from datetime import date, datetime, timedelta
 
 QUOTE_START = re.compile(r"^\s*(-{2,}\s*Original Message|_{10,}\s*$|From:\s|On .{5,80} wrote:\s*$)",
                          re.I | re.M)
-CUE = re.compile(r"\b(due(?: date)?|deadline|respond|response|reply|no later than|on or before|"
-                 r"submit(?:ted)?\s+by|provide\b[^.\n]{0,60}?\bby|return(?:ed)?\s+by)\b", re.I)
+CUE = re.compile(r"\b(due(?: date)?|deadline|respond|responses?|reply|no later than|on or before|"
+                 r"submit(?:ted)?\s+by|provid(?:e|ing)\b[^.\n]{0,60}?\bby|return(?:ed)?\s+by)\b", re.I)
+# Status updates promise a delivery date - that is NOT the DOI's due date, so it has its own cue.
+EXPECT_CUE = re.compile(r"\bexpect(?:s|ed)?\b[^.\n]{0,80}?\bby\b", re.I)
 WINDOW = 100                                     # characters after the cue that are searched
 MONTHS = {m: i for i, names in enumerate(
     [("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",),
@@ -58,11 +60,11 @@ def _dates_in(text, received: datetime) -> list:
     return out
 
 
-def find_due(body: str, received: datetime) -> dict:
+def find_due(body: str, received: datetime, cue_pattern=CUE) -> dict:
     """{'date': date or None, 'note': str or None}. Never both a date and a doubt."""
     text = strip_quoted(body)
     dates, texts = [], []
-    for cue in CUE.finditer(text):
+    for cue in cue_pattern.finditer(text):
         window = text[cue.start(): cue.end() + WINDOW].split("\n\n")[0]
         dates += _dates_in(window, received)
         texts += [t.group(0) for t in TEXT_DUE.finditer(window)]
@@ -75,3 +77,9 @@ def find_due(body: str, received: datetime) -> dict:
     if texts:
         return {"date": None, "note": f"due: {texts[0]}"}
     return {"date": None, "note": None}
+
+
+def find_expected(body: str, sent: datetime):
+    """The date a status update promises ('We expect to provide the remaining materials by ...'),
+    or None. Goes into Notes, never into Due Date."""
+    return find_due(body, sent, EXPECT_CUE)["date"]

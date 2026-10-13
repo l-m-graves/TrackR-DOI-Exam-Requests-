@@ -18,7 +18,9 @@ from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 
 from doi_filter import REQUEST_ID
-from due_dates import find_due
+from due_dates import find_due, find_expected
+from email_types import (ADVANCES_TO_IN_PROGRESS, CREATES_ROW, DUE_DATE_KINDS, LABEL,
+                         classify, topic_from_subject)
 
 SHEET = "DOI Exam Tracker"
 TABLE = "tblRequests"
@@ -55,17 +57,26 @@ def first_word_id(text) -> str:
 
 
 def request_text(subject: str, rid: str) -> str:
-    """Column D text. The sheet's formulas take the Request ID as D's first word, so drop
-    RE:/FW: prefixes and, if the ID still isn't the first word, put it in front."""
+    """Column D text. Team-template subjects ('DOI Exam Request FIN-53 – Topic') become the
+    tracker's own pattern 'FIN-53 Request - Topic'. Otherwise: drop RE:/FW: and make sure the
+    Request ID is the first word (the sheet's formulas read it from there)."""
+    topic = topic_from_subject(subject, rid)
+    if topic:
+        return f"{rid} Request - {topic}"
     text = REPLY_PREFIX.sub("", subject).strip()
     if first_word_id(text) != rid:
         text = f"{rid} {text}"
     return text
 
 
-def note_line(m, ref: str, extra: str = "") -> str:
+def note_line(m, ref: str, extra: str = "", kind: str = "other") -> str:
     extra = f" - {extra}" if extra else ""
-    return f"{m.received:%Y-%m-%d} email from {m.sender}: {m.subject}{extra} [{ref}]"
+    return f"{m.received:%Y-%m-%d} {LABEL[kind]} from {m.sender}: {m.subject}{extra} [{ref}]"
+
+
+def sent_note_line(s, ref: str, extra: str, kind: str) -> str:
+    extra = f" - {extra}" if extra else ""
+    return f"{s.sent_on:%Y-%m-%d} {LABEL[kind]} sent: {s.subject}{extra} [{ref}]"
 
 
 def _day(value):
@@ -77,7 +88,11 @@ def _day(value):
     return None
 
 
-def contact(m) -> str:
+def contact(m, kind: str = "other") -> str:
+    """Who the request's contact is. An assignment email names them on its To line
+    ("I have assigned the request items to you"); otherwise it's the sender."""
+    if kind == "assignment" and m.to:
+        return "; ".join(f"{m.names[a]} <{a}>" if m.names.get(a) else a for a in m.to)
     return f"{m.sender_name} <{m.sender}>" if m.sender_name else m.sender
 
 
@@ -150,11 +165,59 @@ def _append_row(ws, tbl, first, last) -> int:
     return new
 
 
-def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None) -> list:
-    """accepted: list of (Mail, request_id) from fetch_candidates().
-    last_sent: {request_id: datetime} from doi_filter.last_sent_by_request() (your Sent Items).
-    Returns one action dict per email (added / updated / unchanged), plus one per row whose
-    Last Email Sent moved forward."""
+def _due_date(ws, row, stated, changes) -> str:
+    """Write a stated due date into an EMPTY Due Date cell; otherwise return a note when it differs."""
+    stated, cur = _day(stated), _day(ws[f"{COL_DUE}{row}"].value)
+    if ws[f"{COL_DUE}{row}"].value in (None, ""):
+        ws[f"{COL_DUE}{row}"] = stated
+        changes.append("due date")
+        return ""
+    if cur != stated:
+        return (f"email states due {stated:%Y-%m-%d}; tracker has {cur:%Y-%m-%d} - not changed" if cur
+                else f"email states due {stated:%Y-%m-%d} - Due Date cell not changed")
+    return ""
+
+
+def _date_notes(ws, row, kind, body, when, changes) -> list:
+    """What an email's dates mean for this row, by email type."""
+    extra = []
+    if kind in DUE_DATE_KINDS:
+        due = find_due(body, when)
+        if due["date"]:
+            extra.append(_due_date(ws, row, due["date"], changes))
+        elif due["note"]:
+            extra.append(due["note"])
+    elif kind == "status_update":                     # a promise of delivery, not the DOI's due date
+        expected = find_expected(body, when)
+        if expected:
+            extra.append(f"expects to provide by {expected:%Y-%m-%d}")
+    return [e for e in extra if e]
+
+
+def _advance_status(ws, row, kind, changes):
+    """Acknowledgments, status updates, responses and questions mean work has started: move
+    Not Started (or blank) to In Progress. Never touches any status a person chose."""
+    cur = str(ws[f"{COL_STATUS}{row}"].value or "").strip()
+    if kind in ADVANCES_TO_IN_PROGRESS and cur in ("", "Not Started"):
+        ws[f"{COL_STATUS}{row}"] = "In Progress"
+        changes.append(f"status In Progress ({LABEL[kind].lower()})")
+
+
+def _append_note(ws, row, ref, line, changes) -> bool:
+    notes = ws[f"{COL_NOTES}{row}"].value or ""
+    if ref in notes:
+        return False
+    ws[f"{COL_NOTES}{row}"] = f"{notes}\n{line}" if notes else line
+    changes.append("note")
+    return True
+
+
+def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None, sent=None) -> list:
+    """accepted:  [(Mail, request_id)] from fetch_candidates() - emails you received.
+    sent:      [(SentMail, request_id)] from doi_filter.match_sent() - emails you sent.
+    last_sent: {request_id: datetime} from doi_filter.last_sent_by_request().
+    Returns one action dict per received email (added / updated / unchanged / skipped), plus one
+    per sent email that changed a row, plus one per row whose Last Email Sent moved forward."""
     path = Path(path)
     check_unlocked(path)
     check_lossless(path)
@@ -167,10 +230,15 @@ def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None) -> li
     actions = []
     for m, rid in sorted(accepted, key=lambda x: x[0].received):   # oldest first
         ref = note_ref(m.entry_id)
+        kind = classify(m.subject, m.body)
         row = rows.get(rid)
         changes = []
 
         if row is None:
+            if kind not in CREATES_ROW:                 # e.g. a status update for an unknown request
+                actions.append({"request_id": rid, "row": "-", "action": "skipped", "ref": ref, "mail": m,
+                                "changes": f"{LABEL[kind].lower()} for a request not in the tracker - add it by hand"})
+                continue
             row = _append_row(ws, tbl, first, last)
             last = rows[rid] = row
             ws[f"{COL_REQUEST}{row}"] = request_text(m.subject, rid)
@@ -186,35 +254,35 @@ def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None) -> li
 
         # Contact: fill if blank; never replace what a person typed.
         if not ws[f"{COL_CONTACT}{row}"].value:
-            ws[f"{COL_CONTACT}{row}"] = contact(m)
+            ws[f"{COL_CONTACT}{row}"] = contact(m, kind)
             changes.append("contact")
 
-        # Due Date: only a single clear date from this email, only into an EMPTY cell. A different
-        # date than the one already there (an extension?) is noted for you, never overwritten.
-        extra = []
-        due = find_due(m.body, m.received)
-        if due["date"]:
-            stated, cur_due = _day(due["date"]), _day(ws[f"{COL_DUE}{row}"].value)
-            if ws[f"{COL_DUE}{row}"].value in (None, ""):
-                ws[f"{COL_DUE}{row}"] = stated
-                changes.append("due date")
-            elif cur_due != stated:
-                extra.append(f"email states due {stated:%Y-%m-%d}; tracker has "
-                             f"{cur_due:%Y-%m-%d} - not changed" if cur_due else
-                             f"email states due {stated:%Y-%m-%d} - Due Date cell not changed")
-        elif due["note"]:
-            extra.append(due["note"])
+        # Due Date: only a single clear date, only into an EMPTY cell, and only from email types
+        # where a date means the DOI's deadline. Anything else is noted, never overwritten.
+        extra = _date_notes(ws, row, kind, m.body, m.received, changes)
+        _advance_status(ws, row, kind, changes)
 
         # Notes: append-only, one line per email, tagged so re-runs can tell it's done.
-        notes = ws[f"{COL_NOTES}{row}"].value or ""
-        if ref not in notes:
-            line = note_line(m, ref, "; ".join(extra))
-            ws[f"{COL_NOTES}{row}"] = f"{notes}\n{line}" if notes else line
-            changes.append("note")
+        _append_note(ws, row, ref, note_line(m, ref, "; ".join(extra), kind), changes)
 
-        kind = "added" if "new row" in changes else ("updated" if changes else "unchanged")
-        actions.append({"request_id": rid, "row": row, "action": kind,
+        action = "added" if "new row" in changes else ("updated" if changes else "unchanged")
+        actions.append({"request_id": rid, "row": row, "action": action,
                         "changes": ", ".join(changes), "ref": ref, "mail": m})
+
+    # Emails you sent in the team's templates: progress notes and status, never new rows.
+    for s, rid in sorted(sent or [], key=lambda x: x[0].sent_on):
+        kind, row = classify(s.subject, s.body), rows.get(rid)
+        if kind == "other" or row is None:
+            continue
+        ref = note_ref(s.entry_id or f"{s.subject}|{s.sent_on:%Y-%m-%d %H:%M}")
+        if ref in (ws[f"{COL_NOTES}{row}"].value or ""):
+            continue                                       # already recorded on an earlier run
+        changes = []
+        extra = _date_notes(ws, row, kind, s.body, s.sent_on, changes)
+        _advance_status(ws, row, kind, changes)
+        _append_note(ws, row, ref, sent_note_line(s, ref, "; ".join(extra), kind), changes)
+        actions.append({"request_id": rid, "row": row, "action": "updated", "ref": ref, "mail": None,
+                        "changes": f"{LABEL[kind].lower()} sent: " + ", ".join(changes)})
 
     # Last Email Sent: your newest sent email about each request already in the tracker. Only
     # ever moves forward, so a date you typed that is newer than anything found is kept.
@@ -228,7 +296,7 @@ def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None) -> li
             actions.append({"request_id": rid, "row": row, "action": "updated",
                             "changes": f"last email sent {sent_day:%Y-%m-%d}", "ref": "", "mail": None})
 
-    if any(a["action"] != "unchanged" for a in actions) and not dry_run:
+    if any(a["action"] not in ("unchanged", "skipped") for a in actions) and not dry_run:
         backup(path, backup_dir)                # nothing changed -> no backup, no save
         wb.save(path)
     return actions

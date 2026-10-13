@@ -79,22 +79,34 @@ class Mail:
 
 @dataclass
 class SentMail:
-    """An email YOU sent (Sent Items) - only what's needed for Last Email Sent."""
+    """An email YOU sent (Sent Items): acknowledgments, status updates, response materials,
+    scope questions - and the date that feeds Last Email Sent."""
     subject: str
     sent_on: datetime
     conversation_id: str = ""
+    entry_id: str = ""
+    body: str = ""
 
 
-def last_sent_by_request(sent, accepted) -> dict:
-    """Request ID -> newest date you emailed about it. A sent email counts for a request when
-    its subject names the ID (e.g. 'RE: FIN-53 ...') or it is in the same Outlook conversation
-    as a request email (a reply whose subject was changed). Pure Python."""
+def match_sent(sent, accepted) -> list:
+    """[(SentMail, request_id)] for sent emails about a request: the subject names the ID
+    (e.g. 'RE: FIN-53 ...') or the email is in the same Outlook conversation as a request
+    email (a reply whose subject was changed). Pure Python."""
     by_thread = {m.conversation_id: rid for m, rid in accepted if m.conversation_id}
-    latest = {}
+    matched = []
     for s in sent:
         hit = REQUEST_ID.search(s.subject or "")
         rid = hit.group(0) if hit else by_thread.get(s.conversation_id)
-        if rid and s.sent_on and (rid not in latest or s.sent_on > latest[rid]):
+        if rid and s.sent_on:
+            matched.append((s, rid))
+    return matched
+
+
+def last_sent_by_request(sent, accepted) -> dict:
+    """Request ID -> newest date you emailed about it (see match_sent)."""
+    latest = {}
+    for s, rid in match_sent(sent, accepted):
+        if rid not in latest or s.sent_on > latest[rid]:
             latest[rid] = s.sent_on
     return latest
 
@@ -192,7 +204,8 @@ def extract(msg) -> Mail:
 def extract_sent(msg) -> SentMail:
     """COM -> SentMail (Sent Items)."""
     return SentMail(subject=msg.Subject or "", sent_on=_naive(msg.SentOn),
-                    conversation_id=getattr(msg, "ConversationID", "") or "")
+                    conversation_id=getattr(msg, "ConversationID", "") or "",
+                    entry_id=getattr(msg, "EntryID", "") or "", body=getattr(msg, "Body", "") or "")
 
 
 # --- the rules -------------------------------------------------------------
