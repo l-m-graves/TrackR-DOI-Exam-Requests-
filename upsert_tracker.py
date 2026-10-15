@@ -217,7 +217,8 @@ def _append_note(ws, row, ref, line, changes) -> bool:
 def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None, sent=None) -> list:
     """accepted:  [(Mail, request_id)] from fetch_candidates() - emails you received.
     sent:      [(SentMail, request_id)] from doi_filter.match_sent() - emails you sent.
-    last_sent: {request_id: datetime} from doi_filter.last_sent_by_request().
+    last_sent: {request_id: datetime or (datetime, source)} - from doi_filter.merge_last_sent()
+               (accountants' emails, plus your Sent Items if TRACK_SENT).
     Returns one action dict per received email (added / updated / unchanged / skipped), plus one
     per sent email that changed a row, plus one per row whose Last Email Sent moved forward."""
     path = Path(path)
@@ -302,15 +303,17 @@ def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None, sent=
 
     # Last Email Sent: your newest sent email about each request already in the tracker. Only
     # ever moves forward, so a date you typed that is newer than anything found is kept.
-    for rid, sent_on in sorted((last_sent or {}).items()):
+    for rid, value in sorted((last_sent or {}).items()):
+        sent_on, source = value if isinstance(value, tuple) else (value, "")
         row = rows.get(rid)
-        if row is None:                                   # sent mail never creates a request row
+        if row is None:                                   # an email never creates a request row here
             continue
         sent_day, cur = _day(sent_on), _day(ws[f"{COL_LAST_SENT}{row}"].value)
         if cur is None or sent_day > cur:
             ws[f"{COL_LAST_SENT}{row}"] = sent_day
+            label = f"last email sent {sent_day:%Y-%m-%d}" + (f" ({source})" if source else "")
             actions.append({"request_id": rid, "row": row, "action": "updated",
-                            "changes": f"last email sent {sent_day:%Y-%m-%d}", "ref": "", "mail": None})
+                            "changes": label, "ref": "", "mail": None})
 
     if any(a["action"] not in ("unchanged", "skipped") for a in actions) and not dry_run:
         backup(path, backup_dir)                # nothing changed -> no backup, no save

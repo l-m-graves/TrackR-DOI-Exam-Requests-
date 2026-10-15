@@ -17,7 +17,9 @@ ATTACH_DIR   = None    # folder for request attachments, e.g. r"C:\...\DOI_Attac
 LOG_PATH     = r"C:\Users\<you>\OneDrive - <Company>\Audit\Logs\DOI_Run_Log.csv"
 PUBLISH_PATH = None    # view-only copy for coworkers, e.g. a shared folder; None = don't publish
 CONTACTS_PATH = None   # contact directory the script keeps up to date (DOI_Contacts.csv); None = off
-TRACK_SENT   = True    # fill Last Email Sent from your Sent Items; False = leave column M alone
+# Last Email Sent (column M) comes from the ACCOUNTANT_CONTACTS' emails you are CC'd on. Your own
+# Sent Items are extra and off by default - you rarely send. True = count them too (newest wins).
+TRACK_SENT   = False
 
 # Request IDs: FIN-53, IT-39 (real); DOI-TEST-41 (test data). If a new prefix appears, add it to
 # BOTH lines - the Outlook pre-filter has to agree with the pattern or those emails never arrive.
@@ -161,6 +163,37 @@ def last_sent_by_request(sent, accepted) -> dict:
         if rid not in latest or s.sent_on > latest[rid]:
             latest[rid] = s.sent_on
     return latest
+
+
+def last_accountant_email(mails, accepted) -> dict:
+    """Request ID -> (newest datetime, source) of an email SENT BY an accountant (ACCOUNTANT_CONTACTS)
+    about that request, among everything fetched from your mailbox - accepted, review AND rejected:
+    an accountant's short 'RE: FIN-53 - attached' may not qualify as a request, but it is still
+    an email they sent. A message counts for a request when its subject names the ID, its
+    detection found the ID, or it is in the same Outlook conversation as an accepted request
+    email (a reply whose subject was changed). Pure Python."""
+    by_thread = {m.conversation_id: rid for m, rid in accepted if m.conversation_id}
+    latest = {}
+    for m in mails:
+        if role_of(m.sender) != "accountant" or not m.received:
+            continue
+        hit = REQUEST_ID.search(m.subject or "")
+        det_id = getattr(m.detection, "request_id", "") if m.detection is not None else ""
+        rid = hit.group(0) if hit else (det_id or by_thread.get(m.conversation_id))
+        if rid and (rid not in latest or m.received > latest[rid][0]):
+            latest[rid] = (m.received, f"accountant email from {m.sender}")
+    return latest
+
+
+def merge_last_sent(*sources) -> dict:
+    """Combine {rid: datetime or (datetime, source)} dicts, keeping the newest per request."""
+    merged = {}
+    for source in sources:
+        for rid, value in (source or {}).items():
+            when, label = value if isinstance(value, tuple) else (value, "your Sent Items")
+            if rid not in merged or when > merged[rid][0]:
+                merged[rid] = (when, label)
+    return merged
 
 
 def _norm(text: str) -> str:

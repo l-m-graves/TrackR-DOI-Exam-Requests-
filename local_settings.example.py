@@ -12,8 +12,9 @@ LOG_PATH     = r"C:\Users\<you>\OneDrive - <Company>\Audit\Logs\DOI_Run_Log.csv"
 # Contact directory: every sender/To/CC on request emails, updated each run. New senders are
 # only trusted after you type Y in its Approved column. Add team-meeting contacts there by hand.
 CONTACTS_PATH = r"C:\Users\<you>\OneDrive - <Company>\Audit\DOI_Contacts.csv"
-# Last Email Sent (column M) is filled from your Sent Items. Set False to keep typing it yourself.
-# TRACK_SENT = False
+# Last Email Sent (column M) is filled from the ACCOUNTANT_CONTACTS' emails you're CC'd on.
+# Set True to also count your own Sent Items (newest date wins).
+# TRACK_SENT = True
 # View-only copy for coworkers (a shared folder they can open). Must differ from TRACKER_PATH.
 PUBLISH_PATH = r"C:\Users\<you>\<Company>\<Shared folder>\DOI_Exam_Tracker_View_Only.xlsx"
 
