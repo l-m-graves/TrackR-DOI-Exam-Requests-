@@ -105,10 +105,10 @@ def main():
 
     log = [log_row(run_at, m, "rejected", reason) for m, reason in rejected]
     log += [log_row(run_at, m, "review", review_reason=det.reasons[0]) for m, det in review]
-    # Last Email Sent (column M): the accountants' emails you're CC'd on - every fetched message,
-    # not only accepted ones - plus, if TRACK_SENT, your own Sent Items. Newest wins.
+    # Last Email Sent (column M): the newest email in each request's exchange, whoever sent it -
+    # every fetched message, not only accepted ones - plus, if TRACK_SENT, your own Sent Items.
     fetched = [m for m, _ in accepted] + [m for m, _ in review] + [m for m, _ in rejected]
-    accountants = doi_filter.last_accountant_email(fetched, accepted)
+    exchange = doi_filter.last_exchange_email(fetched, accepted)
     own, sent = {}, []
     if doi_filter.TRACK_SENT:
         try:
@@ -117,7 +117,7 @@ def main():
         except Exception as e:                      # never let Sent Items stop the main update
             print(f"Sent Items not read: {e}")
             log.append(run_row(run_at, "error", f"Sent Items not read: {e}"))
-    last_sent = doi_filter.merge_last_sent(accountants, own)
+    last_sent = doi_filter.merge_last_sent(exchange, own)
     try:
         actions = upsert(doi_filter.TRACKER_PATH, accepted, dry_run=args.dry_run,
                          last_sent=last_sent, sent=sent)

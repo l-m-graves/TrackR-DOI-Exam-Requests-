@@ -145,40 +145,47 @@ class AnalysisTests(RoleSettingsMixin, unittest.TestCase):
         self.assertTrue(segs[1].text.strip().startswith("Please provide the closed claims listing"))
 
 
-class LastAccountantEmailTests(RoleSettingsMixin, unittest.TestCase):
-    """Last Email Sent comes from the accountants' emails the intern is CC'd on."""
+class LastExchangeEmailTests(RoleSettingsMixin, unittest.TestCase):
+    """Last Email Sent = the newest email in the request's exchange, whoever sent it."""
 
-    def m(self, subject, sender, day, eid, conv="", rid=""):
+    def m(self, subject, sender, day, eid, conv=""):
         mail = E.mail(subject, "See attached.", sender, eid=eid, received=datetime(2027, 10, day, 15),
                       conversation_id=conv)
-        mail.detection = detect(mail) if not rid else None
+        mail.detection = detect(mail)
         return mail
 
-    def test_newest_accountant_email_per_request(self):
+    def test_newest_email_in_each_exchange_whoever_sent_it(self):
         request = self.m("FIN-201 Request - Premium Tax", "lead.examiner@doi-state.test", 4, "R1", conv="T201")
-        mails = [
-            request,                                                                      # examiner: ignored
+        thread = [
+            request,
             self.m("RE: FIN-201 Request - Premium Tax", "ana.accountant@corp.test", 6, "A1", conv="T201"),
-            self.m("Documents for the examiners", "ana.accountant@corp.test", 9, "A2", conv="T201"),  # subject changed
-            self.m("RE: FIN-201 Request - Premium Tax", "pat.payroll@corp.test", 12, "P1", conv="T201"),  # not an accountant
-            self.m("RE: IT-39 Request - Access Reviews", "ana.accountant@corp.test", 7, "A3"),
-            self.m("Lunch on Friday", "ana.accountant@corp.test", 13, "A4", conv="T-other"),     # unrelated
+            self.m("Documents for the examiners", "pat.payroll@corp.test", 9, "P1", conv="T201"),   # subject changed
         ]
-        latest = doi_filter.last_accountant_email(mails, [(request, "FIN-201")])
+        others = [self.m("RE: IT-39 Request - Access Reviews", "examiner.two@doi-state.test", 7, "X1"),
+                  self.m("Lunch on Friday", "ana.accountant@corp.test", 13, "A4", conv="T-other")]  # unrelated
+        latest = doi_filter.last_exchange_email(thread + others, [(request, "FIN-201")])
         self.assertEqual(set(latest), {"FIN-201", "IT-39"})
-        self.assertEqual(latest["FIN-201"], (datetime(2027, 10, 9, 15), "accountant email from ana.accountant@corp.test"))
-        self.assertEqual(latest["IT-39"][0], datetime(2027, 10, 7, 15))
+        self.assertEqual(latest["FIN-201"], (datetime(2027, 10, 9, 15),
+                                             "latest email in the exchange, from pat.payroll@corp.test"))
+        self.assertEqual(latest["IT-39"], (datetime(2027, 10, 7, 15),
+                                           "latest email in the exchange, from examiner.two@doi-state.test"))
 
-    def test_rejected_accountant_reply_still_counts(self):
+    def test_examiner_reply_counts_too(self):
+        request = self.m("FIN-201 Request - Premium Tax", "ana.accountant@corp.test", 4, "R1", conv="T201")
+        reply = self.m("RE: FIN-201 Request - Premium Tax", "lead.examiner@doi-state.test", 11, "R2", conv="T201")
+        self.assertEqual(doi_filter.last_exchange_email([request, reply], [(request, "FIN-201")])["FIN-201"][0],
+                         datetime(2027, 10, 11, 15))
+
+    def test_rejected_short_reply_still_counts(self):
         reply = self.m("RE: FIN-201 Request", "ana.accountant@corp.test", 8, "A5")
-        reply.body = "Attached."
+        reply.body = "Thanks."
         reply.detection = detect(reply)
         self.assertEqual(reply.detection.status, "reject")                 # no DOI wording - not a request
-        self.assertIn("FIN-201", doi_filter.last_accountant_email([reply], []))
+        self.assertIn("FIN-201", doi_filter.last_exchange_email([reply], []))
 
     def test_merge_keeps_newest_and_labels_sent_items(self):
         merged = doi_filter.merge_last_sent(
-            {"FIN-201": (datetime(2027, 10, 9), "accountant email from ana.accountant@corp.test")},
+            {"FIN-201": (datetime(2027, 10, 9), "latest email in the exchange, from ana.accountant@corp.test")},
             {"FIN-201": datetime(2027, 10, 11), "IT-39": datetime(2027, 10, 2)})
         self.assertEqual(merged["FIN-201"], (datetime(2027, 10, 11), "your Sent Items"))
         self.assertEqual(merged["IT-39"], (datetime(2027, 10, 2), "your Sent Items"))
@@ -274,12 +281,12 @@ class WorkbookTests(RoleSettingsMixin, unittest.TestCase):
         [a] = self.run_upsert((E.FOLLOW_UP_BODY, "FIN-206"))
         self.assertEqual(self.ws()[f"D{a['row']}"].value, "FIN-206 Request - Additional Support - FIN-201 Follow-up")
 
-    def test_last_email_sent_from_accountant_is_written_with_its_source(self):
+    def test_last_email_sent_is_written_with_its_source(self):
         [a] = self.run_upsert((E.DIRECT, "FIN-201"))
         acts = upsert(self.path, [], backup_dir=self.tmp / "Backups", last_sent={
-            "FIN-201": (datetime(2027, 10, 9, 15, 30), "accountant email from ana.accountant@corp.test")})
+            "FIN-201": (datetime(2027, 10, 9, 15, 30), "latest email in the exchange, from lead.examiner@doi-state.test")})
         self.assertEqual(acts[0]["changes"],
-                         "last email sent 2027-10-09 (accountant email from ana.accountant@corp.test)")
+                         "last email sent 2027-10-09 (latest email in the exchange, from lead.examiner@doi-state.test)")
         self.assertEqual(self.ws()[f"M{a['row']}"].value, datetime(2027, 10, 9))
 
     def test_new_examiner_date_on_a_dated_row_is_flagged_not_chosen(self):

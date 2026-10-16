@@ -99,7 +99,7 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 | J | Action Flag | formula | **no** |
 | K | Completed On | input, date | no |
 | L | Contact | input, text | yes, if blank ← assignment email's **To** list (the assignees), else the sender, as `Name <smtp>` |
-| M | Last Email Sent | input, date | yes ← newest email **sent by an `ACCOUNTANT_CONTACTS` address** that the user received/was CC'd on, about the request (ID in subject, ID found by detection, or same `ConversationID` as an accepted request email) — counts accepted, review **and** rejected messages; plus the user's own Sent Items only if `TRACK_SENT=True` (default False). Newest wins, **only moves forward**, date only, source logged |
+| M | Last Email Sent | input, date | yes ← **the newest email in the request's exchange, whoever sent it** (examiner, accountant, coworker, anyone), among the user's received/CC'd emails about the request (ID in subject, ID found by detection, or same `ConversationID` as an accepted request email) — counts accepted, review **and** rejected messages; plus the user's own Sent Items only if `TRACK_SENT=True` (default False). Newest wins, **only moves forward**, date only, source logged |
 | N | Days Since Last Email | formula | **no** |
 | O | Notes / Latest Update | input, text | append only, never overwrite |
 
@@ -140,7 +140,7 @@ These templates are **one signal, not the full set** of DOI correspondence; dire
 - Timestamped backup to `Backups/` next to the tracker before every save.
 - openpyxl requires Excel closed: refuses if `~$<name>` exists or the file can't be opened r+b. Also refuses if the file has charts/images/slicers (openpyxl would delete them).
 - Due Date (G): from `find_due()` per email; written only if G is empty; a conflicting stated date, several dates, or ASAP/TBD become text on that email's Notes line.
-- Last Email Sent (M): `doi_filter.last_accountant_email(fetched, accepted)` over every fetched message (role must be `accountant`; other employees and examiners don't count) → `{rid: (datetime, source)}`; if `TRACK_SENT`, Sent Items (`fetch_sent` → `last_sent_by_request`) are merged by `merge_last_sent()` (newest wins). → `upsert(last_sent=...)`, whose action text names the source. Updates existing rows only, never creates rows, never moves M backwards. A Sent Items failure is logged and doesn't stop the run. Limitation: an accountant email is only seen if the Outlook pre-filter lets it through (ID prefix in subject/body or DOI wording in subject) and it is in the scanned folder. This is what makes the sheet's FOLLOW UP flag (N ≥ FollowUpDays) meaningful.
+- Last Email Sent (M) = last email overall in the exchange: `doi_filter.last_exchange_email(fetched, accepted)` over every fetched message, any sender → `{rid: (datetime, source)}`; if `TRACK_SENT`, Sent Items (`fetch_sent` → `last_sent_by_request`) are merged by `merge_last_sent()` (newest wins). → `upsert(last_sent=...)`, whose action text names the source. Updates existing rows only, never creates rows, never moves M backwards. A Sent Items failure is logged and doesn't stop the run. Limitation: an email is only seen if the Outlook pre-filter lets it through (ID prefix in subject/body or DOI wording in subject) and it is in the scanned folder. This is what makes the sheet's FOLLOW UP flag (N ≥ FollowUpDays) meaningful.
 - `extract()` strips pywin32's timezone tag from `ReceivedTime` — openpyxl rejects tz-aware datetimes.
 
 ## Importing the original request list (`import_original.py`)
