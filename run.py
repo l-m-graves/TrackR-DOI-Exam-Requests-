@@ -20,7 +20,7 @@ import doi_contacts
 import doi_filter
 import seen_state
 from publish import needs_publish, publish
-from doi_analysis import analyze
+from doi_analysis import analyze, examiner_included
 from upsert_tracker import TrackerError, note_ref, upsert
 
 LOG_FIELDS = ["run_at", "result", "request_id", "topic", "classification", "confidence", "signals",
@@ -130,6 +130,8 @@ def _run(args):
     state = {} if args.all else seen_state.load(seen_path())
     contacts = doi_contacts.load(doi_filter.CONTACTS_PATH) if doi_filter.CONTACTS_PATH else None
     approved = doi_contacts.approved_senders(contacts) if contacts else set()
+    if contacts:                        # people the examiner side brought onto threads earlier
+        doi_filter.THREAD_THIRD_PARTIES = doi_contacts.thread_third_parties(contacts)
     attach_dir = None if args.dry_run else doi_filter.ATTACH_DIR     # dry run saves nothing
     accepted, rejected, review = doi_filter.fetch_candidates(since=since, attach_dir=attach_dir,
                                                              approved_senders=approved,
@@ -205,11 +207,17 @@ def _run(args):
     # Contact directory: record everyone on request emails (accepted, or rejected after the ID
     # check passed). New senders stay untrusted until you type Y in Approved.
     if contacts is not None:
-        new = []
+        new, before = [], doi_contacts.thread_third_parties(contacts)
         for m, why in accepted + rejected + review:
-            rid = doi_filter.find_id(m.subject)
+            rid = doi_filter.find_id(m.subject) or getattr(m.detection, "request_id", "")
             if rid and ref(m) in news:
-                new += doi_contacts.observe(contacts, m, rid, m.received or run_at)
+                included = examiner_included(m, approved) if doi_filter.THIRD_PARTY_FROM_THREAD else set()
+                new += doi_contacts.observe(contacts, m, rid, m.received or run_at, included)
+        joined = sorted(doi_contacts.thread_third_parties(contacts) - before)
+        if joined:                      # takes effect from the next run (review items are re-judged then)
+            print(f"Contacts: {len(joined)} person(s) now count as third party - the examiner side put them on "
+                  f"a request email (column Examiner_Thread; type N in Approved to undo)")
+            log.append(run_row(run_at, "contacts", f"third party via examiner thread: {', '.join(joined)}"))
         pending = doi_contacts.pending_senders(contacts)
         print(f"Contacts: {len(new)} new, {len(pending)} sender(s) awaiting your approval"
               + (f" - open {Path(doi_filter.CONTACTS_PATH).name} and type Y in Approved" if pending else ""))

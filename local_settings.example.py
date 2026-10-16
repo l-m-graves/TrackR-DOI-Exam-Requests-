@@ -31,6 +31,10 @@ EXAMINER_CONTACTS    = set()                        # other examiner addresses
 EXAMINER_DOMAINS     = {"<regulator domain>"}
 THIRD_PARTY_CONTACTS = set()                        # examination-firm people working for the DOI
 THIRD_PARTY_DOMAINS  = {"<exam firm domain>"}       # e.g. the firm(s) the DOI uses
+# Anyone else the EXAMINER puts on a request email (To/CC, or a forwarded examiner message) also
+# counts as third party automatically - see column Examiner_Thread in DOI_Contacts.csv; type N in
+# Approved to undo one person. To switch this off:
+# THIRD_PARTY_FROM_THREAD = False
 ACCOUNTANT_CONTACTS  = {"<accountant address>"}     # internal accountants coordinating requests - fill this in:
                                                     # they are never put in the Contact column
 # MY_ADDRESSES = {"<your address>"}                 # only if Outlook can't tell the program who you are

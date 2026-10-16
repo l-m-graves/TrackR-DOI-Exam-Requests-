@@ -29,6 +29,7 @@ class Segment:
     author_name: str
     text: str
     exchange: bool = False # header shows an Exchange (X500) address: someone inside the company
+    recipients: list = field(default_factory=list)   # addresses on that part's To:/Cc: lines
 
 
 def _tokens(name) -> frozenset:
@@ -73,12 +74,31 @@ def segments(body: str, sender: str, names=None) -> list:
         end = cuts[i + 1][0] if i + 1 < len(cuts) else len(body)
         chunk = body[m.end(): end]
         fields = list(HEADER_FIELD.finditer(chunk))
-        text = chunk[chunk.find("\n", fields[-1].end()) + 1:] if fields else chunk   # after the header
+        header_end = chunk.find("\n", fields[-1].end()) + 1 if fields else 0
+        text = chunk[header_end:] if fields else chunk                                 # after the header
+        recipients = [a.lower() for line in chunk[:header_end].splitlines()
+                      if re.match(r"[ \t>]*(To|Cc):", line, re.I) for a in ADDRESS.findall(line)]
         addr = ADDRESS.search(m.group(1))
         name = re.sub(r"[<\[].*", "", m.group(1)).strip().strip('"')
         author = addr.group(0).lower() if addr else (names or {}).get(_tokens(name), "")
-        parts.append(Segment(author, name, text, exchange=bool(X500.search(m.group(1)))))
+        parts.append(Segment(author, name, text, exchange=bool(X500.search(m.group(1))), recipients=recipients))
     return parts
+
+
+def examiner_included(m, approved_senders=()) -> set:
+    """Outside addresses the EXAMINER SIDE put on this thread: To/CC of an email an examiner-side
+    person sent, and the To/Cc lines of a forwarded part they wrote. Only people the program
+    doesn't know yet (not internal, not you, not the team mailbox). Being brought in by the
+    examiner is the evidence; being on an email from a colleague is not (that could be the
+    company's own outside consultant)."""
+    found = set()
+    if F.role_of(m.sender, approved_senders) in F.EXAMINER_SIDE:
+        found |= set(m.to) | set(m.cc)
+    for seg in segments(m.body, m.sender, name_book(m))[1:]:
+        if seg.author and F.role_of(seg.author, approved_senders) in F.EXAMINER_SIDE:
+            found |= set(seg.recipients)
+    return {a for a in found if "@" in a and a not in F.MY_ADDRESSES and a not in F.MUST_BE_SENT_TO
+            and F.role_of(a, approved_senders) in ("unknown", "approved")}
 
 
 def original_sender(segs) -> str:

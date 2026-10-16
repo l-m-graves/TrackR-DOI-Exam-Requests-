@@ -46,6 +46,11 @@ THIRD_PARTY_CONTACTS = set()   # examination-firm people working for the DOI
 THIRD_PARTY_DOMAINS  = set()   # examination-firm domain(s)
 ACCOUNTANT_CONTACTS  = set()   # internal accountants who coordinate requests
 INTERNAL_DOMAINS     = set()   # the company's own domain(s): any other employee
+# Outside people the EXAMINER SIDE put on a request email (To/CC, or the To/Cc of a forwarded
+# examiner message) count as third party - e.g. exam-firm staff whose domain isn't listed above.
+# Recorded per address in DOI_Contacts.csv (column Examiner_Thread); type N in Approved to undo one.
+THIRD_PARTY_FROM_THREAD = True
+THREAD_THIRD_PARTIES = set()   # filled each run from DOI_Contacts.csv - not a setting
 MY_ADDRESSES         = set()   # your own address(es); found in Outlook each run - set only if that fails
 ENTITY_NAMES         = ()      # legal-entity names to spot in request scope (optional)
 PRODUCT_NAMES        = ()      # product / line-of-business names to spot in scope (optional)
@@ -125,6 +130,8 @@ def role_of(address, approved=()) -> str:
         return "internal"
     if d in SENDER_DOMAINS:             # legacy list - checked last, so if it also holds your own
         return "examiner"               # company's domain, colleagues still count as internal
+    if THIRD_PARTY_FROM_THREAD and a in THREAD_THIRD_PARTIES:
+        return "third_party"            # brought onto a request thread by the examiner side
     if a in approved:
         return "approved"
     return "unknown"

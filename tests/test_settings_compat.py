@@ -194,3 +194,96 @@ class ContactTests(unittest.TestCase):
         from types import SimpleNamespace
         ns = SimpleNamespace(Accounts=[SimpleNamespace(SmtpAddress="Intern@Corp.test")])   # no CurrentUser: fine
         self.assertEqual(doi_filter.own_addresses(ns), {"intern@corp.test"})
+
+
+class ExaminerThreadTests(unittest.TestCase):
+    """Outside people the examiner side puts on a request thread count as third party."""
+    FIRM = "kim.reviewer@newfirm.test"          # exam-firm person whose domain isn't in the settings
+
+    def setUp(self):
+        p = mock.patch.multiple(doi_filter, **dict(E.ROLES, MUST_BE_SENT_TO={"audit@corp.test"},
+                                                   MY_ADDRESSES={E.INTERN}, THREAD_THIRD_PARTIES=set()))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def included(self, sender, to=(), cc=(), body="Please provide the DOI examination items."):
+        from doi_analysis import examiner_included
+        return examiner_included(E.mail("FIN-701 Request - Claims", body, sender, to=to, cc=cc))
+
+    def test_people_the_examiner_copies(self):
+        got = self.included("lead.examiner@doi-state.test", to=["audit@corp.test", "ana.accountant@corp.test"],
+                            cc=[self.FIRM, E.INTERN, "pat.claims@corp.test"])
+        self.assertEqual(got, {self.FIRM})               # not you, the mailbox, colleagues
+
+    def test_recipients_of_a_forwarded_examiner_message(self):
+        body = ("FYI - see below.\n\n"
+                "From: Lead Examiner <lead.examiner@doi-state.test>\n"
+                "Sent: Monday, October 4, 2027 9:00 AM\n"
+                "To: Audit <audit@corp.test>\n"
+                f"Cc: Kim Reviewer <{self.FIRM}>\n"
+                "Subject: FIN-701 Request - Claims\n\n"
+                "Please provide the claims listing.\n")
+        self.assertEqual(self.included("ana.accountant@corp.test", to=[E.INTERN], body=body), {self.FIRM})
+
+    def test_people_a_colleague_copies_are_not_vouched_for(self):
+        self.assertEqual(self.included("ana.accountant@corp.test", cc=["consultant@advisers.test"]), set())
+
+    def test_role_and_contact_directory(self):
+        import doi_contacts as C
+        contacts = {}
+        m = E.mail("FIN-701 Request - Claims", "Please provide the items.", "lead.examiner@doi-state.test",
+                   to=["audit@corp.test"], cc=[self.FIRM])
+        C.observe(contacts, m, "FIN-701", datetime(2027, 10, 4), {self.FIRM})
+        self.assertEqual(contacts[self.FIRM]["Examiner_Thread"], "Y")
+        self.assertEqual(C.thread_third_parties(contacts), {self.FIRM})
+        with mock.patch.object(doi_filter, "THREAD_THIRD_PARTIES", C.thread_third_parties(contacts)):
+            self.assertEqual(doi_filter.role_of(self.FIRM), "third_party")
+            self.assertEqual(doi_filter.role_of("ana.accountant@corp.test"), "accountant")
+        reply = E.mail("RE: FIN-701", "Attached.", self.FIRM, to=["ana.accountant@corp.test"])
+        C.observe(contacts, reply, "FIN-701", datetime(2027, 10, 5))
+        self.assertNotIn(self.FIRM, C.pending_senders(contacts))     # trusted via the examiner
+        contacts[self.FIRM]["Approved"] = "N"                        # you say no
+        self.assertEqual(C.thread_third_parties(contacts), set())
+        self.assertNotIn(self.FIRM, C.pending_senders(contacts))     # decided - not asked again
+
+    def test_forward_only_addresses_get_a_row(self):
+        import doi_contacts as C
+        contacts = {}
+        m = E.mail("FW: FIN-701", "x", "ana.accountant@corp.test", to=[E.INTERN])
+        C.observe(contacts, m, "FIN-701", datetime(2027, 10, 4), {self.FIRM})
+        self.assertEqual((contacts[self.FIRM]["Roles"], contacts[self.FIRM]["Examiner_Thread"]), ("Forwarded", "Y"))
+
+
+class ExaminerThreadRunTests(unittest.TestCase):
+    """Two hourly runs: the examiner copies an unknown exam-firm person; that person's own
+    email waits in review, and is accepted on the next run."""
+
+    def test_review_becomes_accepted_once_the_examiner_vouched(self):
+        import io
+        from contextlib import redirect_stdout
+        import run
+        from tests.test_hourly import FakeFolder, fake_msg, fake_outlook, person
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        firm = "kim.reviewer@newfirm.test"
+        examiner = fake_msg("FIN-702 Request - Claims", "Please provide the DOI examination claims listing.",
+                            "lead.examiner@doi-state.test", "E1", "T1")
+        examiner.Recipients.append(person(firm, 2))
+        reply = fake_msg("RE: FIN-702 Request - Claims", "Following up on the DOI examination request for claims.",
+                         firm, "E2", "T1")
+        inbox = FakeFolder("Inbox", [examiner, reply])
+        uploads = []
+        def fake_upsert(path, accepted, **kw):
+            uploads.append(sorted(m.entry_id for m, _ in accepted))
+            return [{"request_id": rid, "row": 4, "action": "updated", "ref": doi_filter.message_ref(m.entry_id),
+                     "mail": m, "changes": "note"} for m, rid in accepted]
+        with mock.patch.multiple(doi_filter, **dict(E.ROLES, MUST_BE_SENT_TO=set(), THREAD_THIRD_PARTIES=set(),
+                                                    LOG_PATH=str(d / "DOI_Run_Log.csv"), TRACKER_PATH=str(d / "T.xlsx"),
+                                                    CONTACTS_PATH=str(d / "DOI_Contacts.csv"), PUBLISH_PATH=None,
+                                                    ATTACH_DIR=None, TRACK_SENT=False)), \
+                mock.patch.object(doi_filter, "_outlook", return_value=fake_outlook(inbox)), \
+                mock.patch.object(run, "upsert", side_effect=fake_upsert), redirect_stdout(io.StringIO()) as out:
+            run.main([])
+            run.main([])
+        self.assertEqual(uploads, [["E1"], ["E2"]])          # run 1: examiner only; run 2: the firm's reply
+        self.assertIn("now count as third party", out.getvalue())
