@@ -260,4 +260,8 @@ def _run(args):
 
 
 if __name__ == "__main__":
+    if doi_filter.SETTINGS_FILE is None:            # placeholders would only fail later, less clearly
+        where = "\n  ".join(str(p) for p in doi_filter.settings_candidates(Path(doi_filter.__file__).resolve().parent))
+        print(f"No local_settings.py found. Looked in:\n  {where}\nPut your settings file in one of those places.")
+        sys.exit(2)
     sys.exit(main())

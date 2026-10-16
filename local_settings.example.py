@@ -1,4 +1,5 @@
-# Copy this file to local_settings.py and fill in real values.
+# Copy this file to local_settings.py and fill in real values. Put it next to run.py, or in a folder
+# named Settings beside the program's folder (e.g. ...\Python Script\Repo and ...\Python Script\Settings).
 # local_settings.py is git-ignored, so real paths and addresses stay on your laptop.
 # Anything set here overrides the placeholder of the same name in doi_filter.py.
 

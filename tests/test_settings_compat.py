@@ -368,3 +368,45 @@ class MustBeSentToDomainTests(unittest.TestCase):
             from upsert_tracker import contact
             m = E.mail("FIN-901", "Please provide the DOI items.", "ana.accountant@corp.test", to=["pat.claims@corp.test"], cc=())
             self.assertEqual(contact(m, "assignment"), "pat.claims@corp.test")   # a domain entry never hides colleagues
+
+
+class SettingsLocationTests(unittest.TestCase):
+    """local_settings.py next to the program, or in a Settings folder beside it."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.root)
+        self.repo = self.root / "Repo"
+        (self.root / "Settings").mkdir()
+        self.repo.mkdir()
+
+    def test_settings_folder_beside_the_program(self):
+        beside = self.root / "Settings" / "local_settings.py"
+        beside.write_text("X = 1\n")
+        self.assertEqual(doi_filter.find_settings(self.repo), (beside, []))
+
+    def test_program_folder_wins_and_the_other_copy_is_reported(self):
+        here = self.repo / "local_settings.py"
+        here.write_text("X = 1\n")
+        beside = self.root / "Settings" / "local_settings.py"
+        beside.write_text("X = 2\n")
+        self.assertEqual(doi_filter.find_settings(self.repo), (here, [beside]))
+
+    def test_none_found(self):
+        self.assertEqual(doi_filter.find_settings(self.repo), (None, []))
+
+    def test_settings_file_really_loads_from_the_settings_folder(self):
+        import subprocess, sys
+        src = Path(doi_filter.__file__).resolve().parent
+        for f in src.glob("*.py"):
+            if not f.name.startswith("local_settings"):
+                shutil.copy(f, self.repo / f.name)
+        (self.root / "Settings" / "local_settings.py").write_text(
+            'TRACKER_PATH = "/fake/Tracker.xlsx"\nLOG_PATH = "/fake/CSV"\n_HELPER = 1\n')
+        out = subprocess.run([sys.executable, "-c", "import doi_filter as F; print(F.TRACKER_PATH, F.LOG_PATH, hasattr(F, '_HELPER'))"],
+                             cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(out.stdout.split(), ["/fake/Tracker.xlsx", "/fake/CSV/DOI_Run_Log.csv", "False"])
+        (self.root / "Settings" / "local_settings.py").unlink()
+        out = subprocess.run([sys.executable, "run.py"], cwd=self.repo, capture_output=True, text=True)
+        self.assertEqual(out.returncode, 2)
+        self.assertIn("No local_settings.py found", out.stdout)

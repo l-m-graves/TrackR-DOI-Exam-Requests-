@@ -55,14 +55,30 @@ MY_ADDRESSES         = set()   # your own address(es); found in Outlook each run
 ENTITY_NAMES         = ()      # legal-entity names to spot in request scope (optional)
 PRODUCT_NAMES        = ()      # product / line-of-business names to spot in scope (optional)
 
-try:
-    from local_settings import *    # noqa: F401,F403  - real values override the placeholders above
-except ImportError:
-    try:                            # in case it was renamed during the brief Title_Case period
-        from Local_Settings import *    # noqa: F401,F403
+def settings_candidates(here: Path) -> list:
+    """Where local_settings.py may live, in this order: next to the program, or in a folder named
+    Settings beside the program's folder (...\\Python Script\\Repo + ...\\Python Script\\Settings) -
+    so unzipping a program update into Repo can never overwrite your settings."""
+    return [here / "local_settings.py", here / "Local_Settings.py", here.parent / "Settings" / "local_settings.py"]
+
+
+def find_settings(here: Path):
+    """(the settings file to use or None, the other copies that are ignored)."""
+    found = [p for p in settings_candidates(here) if p.is_file()]
+    return (found[0] if found else None), found[1:]
+
+
+SETTINGS_FILE, _ignored = find_settings(Path(__file__).resolve().parent)
+if SETTINGS_FILE is not None:       # real values override the placeholders above
+    import importlib.util
+    _spec = importlib.util.spec_from_file_location("local_settings", SETTINGS_FILE)
+    _settings = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_settings)
+    globals().update({k: v for k, v in vars(_settings).items() if not k.startswith("_")})
+    if SETTINGS_FILE.name == "Local_Settings.py":       # from the brief Title_Case period
         print("Note: rename Local_Settings.py back to local_settings.py (this name still works for now).")
-    except ImportError:
-        pass
+    for _other in _ignored:
+        print(f"Note: two settings files - using {SETTINGS_FILE}, IGNORING {_other}. Delete one of them.")
 
 REQUEST_ID = re.compile(REQUEST_ID_PATTERN)     # compiled after local_settings so an override applies
 # Case-sensitive on purpose: with a pattern that allows 'FIN 45' / 'IT39', ignoring case would
