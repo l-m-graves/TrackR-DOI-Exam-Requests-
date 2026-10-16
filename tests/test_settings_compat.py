@@ -287,3 +287,84 @@ class ExaminerThreadRunTests(unittest.TestCase):
             run.main([])
         self.assertEqual(uploads, [["E1"], ["E2"]])          # run 1: examiner only; run 2: the firm's reply
         self.assertIn("now count as third party", out.getvalue())
+
+
+class SendToTests(unittest.TestCase):
+    """Who the response goes to: the examiner side's own words, else the lead examiner."""
+
+    def setUp(self):
+        p = mock.patch.multiple(doi_filter, **E.ROLES)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def send_to(self, body, sender="lead.examiner@doi-state.test", to=("audit@corp.test",),
+                cc=("jordan.lee@examfirm.test",), names=None, leads=None):
+        from doi_analysis import analyze
+        m = E.mail("FIN-801 Request - Claims", body, sender, to=to, cc=cc,
+                   names=names if names is not None else {"jordan.lee@examfirm.test": "Lee, Jordan"})
+        with mock.patch.object(doi_filter, "LEAD_EXAMINERS",
+                               leads if leads is not None else {"lead.examiner@doi-state.test"}):
+            an = analyze(m, "FIN-801")
+        return an.send_to, an.send_to_source
+
+    def test_named_person_is_looked_up_on_the_email(self):
+        who, src = self.send_to("Please send the responses to Jordan by 10/20/27.")
+        self.assertEqual(who, "Lee, Jordan <jordan.lee@examfirm.test>")
+        self.assertTrue(src.startswith("stated: "))
+
+    def test_me_is_whoever_wrote_it(self):
+        self.assertEqual(self.send_to("Please give it to me by 10/20/27.")[0], "lead.examiner@doi-state.test")
+
+    def test_me_in_a_forwarded_examiner_message(self):
+        body = ("FYI below.\n\nFrom: Lead Examiner <lead.examiner@doi-state.test>\nSent: Monday, October 4, 2027\n"
+                "To: Audit <audit@corp.test>\nSubject: FIN-801\n\nPlease send everything to me by 10/22/27.\n")
+        who, _ = self.send_to(body, sender="ana.accountant@corp.test", to=(E.INTERN,), cc=())
+        self.assertEqual(who, "lead.examiner@doi-state.test")
+
+    def test_an_address_written_out(self):
+        self.assertEqual(self.send_to("Please submit your documents to pat.kim@examfirm.test by Friday.")[0],
+                         "pat.kim@examfirm.test")
+
+    def test_default_is_the_lead_examiner(self):
+        who, src = self.send_to("Please provide the claims listing by 10/20/27.")
+        self.assertEqual(who, "lead.examiner@doi-state.test")
+        self.assertIn("default", src)
+        self.assertEqual(self.send_to("Please provide the claims listing.", leads=set())[0], "")   # none configured
+
+    def test_name_not_on_the_email_is_flagged(self):
+        from doi_analysis import analyze
+        m = E.mail("FIN-801", "Please send the responses to Morgan by 10/20/27.", "lead.examiner@doi-state.test",
+                   to=["audit@corp.test"])
+        an = analyze(m, "FIN-801")
+        self.assertEqual(an.send_to, "Morgan (address not on the email)")
+        self.assertTrue(any("Morgan" in r for r in an.review))
+
+    def test_not_a_send_instruction(self):
+        for body in ("Please provide information related to Premium Tax by 10/20/27.",
+                     "Please reconcile Schedule D to General Ledger balances.",
+                     "Please provide responses to the following questions.",
+                     "Please submit to SharePoint by Friday.",
+                     "Please send to the Department by 10/20/27."):
+            self.assertIn("default", self.send_to(body)[1], body)        # nothing stated -> default
+
+    def test_a_colleagues_send_it_to_me_is_not_the_delivery_address(self):
+        who, src = self.send_to("Please send it to me by Friday.", sender="ana.accountant@corp.test",
+                                to=("pat.claims@corp.test",), cc=())
+        self.assertIn("default", src)
+
+
+class MustBeSentToDomainTests(unittest.TestCase):
+    def test_a_domain_entry_means_anyone_at_that_domain(self):
+        self.assertEqual(doi_filter._required("@Corp.test"), "@corp.test")
+        self.assertEqual(doi_filter._required("corp.test"), "@corp.test")
+        self.assertEqual(doi_filter._required(" Audit@Corp.test"), "audit@corp.test")
+        with mock.patch.multiple(doi_filter, **dict(E.ROLES, MUST_BE_SENT_TO={"@corp.test"})):
+            ok = detect(E.mail("FIN-901 Request", "Please provide the DOI examination support.",
+                               "lead.examiner@doi-state.test", to=["pat.claims@corp.test"], cc=()))
+            self.assertEqual(ok.status, "accept")
+            no = detect(E.mail("FIN-901 Request", "Please provide the DOI examination support.",
+                               "lead.examiner@doi-state.test", to=["someone@elsewhere.test"], cc=()))
+            self.assertEqual(no.status, "reject")
+            from upsert_tracker import contact
+            m = E.mail("FIN-901", "Please provide the DOI items.", "ana.accountant@corp.test", to=["pat.claims@corp.test"], cc=())
+            self.assertEqual(contact(m, "assignment"), "pat.claims@corp.test")   # a domain entry never hides colleagues

@@ -294,6 +294,8 @@ def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None, sent=
             elif "due date" in changes and an.date_source.startswith("internal"):
                 extra.append("Due Date set from the internal expected date - no examiner deadline seen yet")
         an.review = review                                           # incl. any conflict just found
+        if "new row" in changes and an.send_to and not an.send_to_source.startswith("stated"):
+            extra.append(f"send to {an.send_to} ({an.send_to_source.split(' (')[0]}, default)")
         if an.summary():
             extra.append(an.summary())
         _advance_status(ws, row, kind, changes)

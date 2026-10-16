@@ -105,11 +105,25 @@ INTERNAL_DOMAINS = normalize_domains(INTERNAL_DOMAINS)
 LEAD_EXAMINERS, EXAMINER_CONTACTS, THIRD_PARTY_CONTACTS, ACCOUNTANT_CONTACTS = (
     {a.strip().lower() for a in group}
     for group in (LEAD_EXAMINERS, EXAMINER_CONTACTS, THIRD_PARTY_CONTACTS, ACCOUNTANT_CONTACTS))
-MUST_BE_SENT_TO = {a.strip().lower() for a in MUST_BE_SENT_TO if a and a.strip()}
+def _required(entry: str) -> str:
+    """'audit@corp.test' stays an address; '@corp.test' or 'corp.test' means anyone at that domain."""
+    entry = entry.strip().lower()
+    return entry if "@" in entry and not entry.startswith("@") else "@" + entry.lstrip("@")
+
+
+MUST_BE_SENT_TO = {_required(a) for a in MUST_BE_SENT_TO if a and a.strip()}
 MY_ADDRESSES = {a.strip().lower() for a in MY_ADDRESSES if a and a.strip()}
 
 EXAMINER_SIDE = {"lead_examiner", "examiner", "third_party"}
 INTERNAL_SIDE = {"accountant", "internal"}
+
+
+def reaches_required(m) -> bool:
+    """MUST_BE_SENT_TO: one of its addresses is on To/CC, or - for an '@domain' entry - anyone at
+    that domain is. (Exact addresses only are left out of Contact; a domain entry never is.)"""
+    people = {a.lower() for a in list(m.to) + list(m.cc)}
+    domains = {e[1:] for e in MUST_BE_SENT_TO if e.startswith("@")}
+    return bool(MUST_BE_SENT_TO & people) or any(a.split("@")[-1] in domains for a in people)
 
 
 def role_of(address, approved=()) -> str:
@@ -354,7 +368,7 @@ def qualify(m: Mail, approved_senders=()) -> tuple[bool, str]:
         return False, "subject has no request ID"
     if m.sender.split("@")[-1].lower() not in SENDER_DOMAINS and m.sender not in approved_senders:
         return False, f"sender not approved: {m.sender}"
-    if MUST_BE_SENT_TO and not MUST_BE_SENT_TO & set(m.to + m.cc):
+    if MUST_BE_SENT_TO and not reaches_required(m):
         return False, "not addressed to MUST_BE_SENT_TO"
     body = m.body.lower()
     if not any(p in body for p in BODY_PHRASES):

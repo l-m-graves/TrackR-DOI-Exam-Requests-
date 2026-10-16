@@ -166,7 +166,7 @@ def detect(m, approved_senders=()) -> Detection:
         det.status, det.confidence = "accept", "high"
         det.reasons.insert(0, "passes all five qualification rules")
         return det
-    if F.MUST_BE_SENT_TO and not internal_sender and not F.MUST_BE_SENT_TO & set(m.to + m.cc):
+    if F.MUST_BE_SENT_TO and not internal_sender and not F.reaches_required(m):
         # An explicit setting is a hard rule for EXTERNAL emails only. Internal forwards and
         # replies (often just to you, CC'd) are judged on the signals below instead.
         det.reasons.insert(0, "external email not addressed to MUST_BE_SENT_TO")
@@ -249,6 +249,8 @@ class Analysis:
     date_notes: list = field(default_factory=list)       # ASAP / several dates / unverified dates
     review: list = field(default_factory=list)           # reasons a person must look
     submission_status: str = ""                          # files ready | submitted
+    send_to: str = ""                      # who the response goes to: 'Name <address>' (or a name not found)
+    send_to_source: str = ""               # 'stated: <sentence>' | 'lead examiner (default ...)'
 
     def summary(self) -> str:
         """Short text for the tracker's Notes line."""
@@ -268,9 +270,72 @@ class Analysis:
                               ("controls", self.controls), ("entities", self.entities), ("products", self.products)):
             if values:
                 bits.append(f"{label}: {', '.join(values)}")
+        if self.send_to and self.send_to_source.startswith("stated"):
+            bits.append(f"send to {self.send_to}")             # the default is noted once, on the new row
         if self.review:
             bits.append("REVIEW: " + "; ".join(self.review))
         return "; ".join(bits)
+
+
+# --- who the response goes to -----------------------------------------------------------
+# "Please send to Jordan by 10/20/27", "please give it to me by ...", "submit the responses to
+# jordan.lee@... ". Only the EXAMINER SIDE's words (or a request document) say where the DOI wants
+# the response; a colleague's "send it to me" is internal collection, not the delivery address.
+# Only these shapes: "<verb> [it / them / the responses / your documents ...] [directly] to <who>".
+# A fixed list on purpose - "information related to Premium Tax" or "reconcile Schedule D to the
+# General Ledger" must not read as "send to ...".
+SEND_WHAT = (r"(?:\s+(?:it|them|this|these|those|everything|"
+             r"(?:the|your|all|any|our|all\s+the)\s+(?:requested\s+)?(?:responses?|documents?|documentation|files?|"
+             r"materials?|information|support(?:ing\s+documents?)?|items?|answers?|data|deliverables?|reports?)))?")
+SEND_TO = re.compile(r"\b(?:send|give|provide|submit|forward|return|e-?mail|deliver|direct)" + SEND_WHAT +
+                     r"\s+(?:directly\s+|back\s+)?to\s+(?P<who>[^,;:!?\n()]{1,80})", re.I)
+WHO_END = re.compile(r"\s+(?:by|no later than|on or before|before|at|via|on|in|within|for|and|so|as|once|when|if)\b.*$", re.I)
+NOT_A_PERSON = re.compile(r"^(?:the|our|your|this|these|those|that|all|each|any|every|a|an|following|"
+                          r"department|division|team|examiners?|regulators?|doi|sharepoint|portal|site)\b", re.I)
+NAME = re.compile(r"^[A-Z][\w'.-]*(?:,?\s+[A-Z][\w'.-]*){0,3}$")
+
+
+def _resolve_name(name, book):
+    """'Jordan', 'Jordan Lee' or 'Lee, Jordan' -> the one address on the email whose name contains
+    those words, else '' (none, or more than one fits)."""
+    want = _tokens(name)
+    hits = {addr for key, addr in book.items() if want and want <= key}
+    return hits.pop() if len(hits) == 1 else ""
+
+
+def _display(addr, m):
+    name = (m.names or {}).get(addr) or (m.sender_name if addr == m.sender else "")
+    return f"{name} <{addr}>" if name else addr
+
+
+def find_send_to(m, segs, roles, trusted_docs=()):
+    """(send_to, source) from the examiner side's own words, newest first, then request documents.
+    'me'/'us' = whoever wrote that part. A name is looked up among the people on the email."""
+    book = name_book(m)
+    texts = [(seg.author or (m.sender if i == 0 else ""), seg.text)
+             for i, (seg, role) in enumerate(zip(segs, roles)) if role in F.EXAMINER_SIDE]
+    texts += [("", text) for text in trusted_docs]
+    for author, text in texts:
+        for hit in SEND_TO.finditer(text):
+            who = re.split(r"\.(?:\s|$)", hit["who"])[0]          # sentence end (dots inside an address stay)
+            who = WHO_END.sub("", who).strip()
+            sentence = " ".join(text[max(0, hit.start() - 10): hit.end() + 40].split())[:160]
+            address = ADDRESS.search(who)
+            if address:
+                return _display(address.group(0).lower(), m), f"stated: {sentence}"
+            if who.lower() in ("me", "us", "myself"):
+                if author:
+                    return _display(author, m), f"stated: {sentence}"
+                continue
+            if NOT_A_PERSON.match(who) or not NAME.match(who):
+                continue
+            addr = _resolve_name(who, book)
+            return (_display(addr, m) if addr else f"{who} (address not on the email)"), f"stated: {sentence}"
+    leads = [a for a in F.LEAD_EXAMINERS]
+    on_email = [a for a in leads if a in {m.sender, *m.to, *m.cc, *(s.author for s in segs)}]
+    if on_email or len(leads) == 1:
+        return _display((on_email or leads)[0], m), "lead examiner (default - the email names no one)"
+    return "", ""
 
 
 def _unique(items):
@@ -391,4 +456,8 @@ def analyze(m, request_id, approved_senders=()) -> Analysis:
     for name in m.attachment_status:
         if "not read" in name:
             an.review.append(f"attachment {name}")
+    docs = [t for n, t in attachments if request_doc_trusted and F.important_attachments([n])]
+    an.send_to, an.send_to_source = find_send_to(m, segs, roles, docs)
+    if "address not on the email" in an.send_to:
+        an.review.append(f"send to {an.send_to}")
     return an

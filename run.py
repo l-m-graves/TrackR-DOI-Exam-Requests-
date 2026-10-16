@@ -26,7 +26,8 @@ from upsert_tracker import TrackerError, note_ref, upsert
 LOG_FIELDS = ["run_at", "result", "request_id", "topic", "classification", "confidence", "signals",
               "message_id", "conversation_id", "current_sender", "original_sender", "received", "ref",
               "subject", "exam_due_date", "internal_expected_date", "tracking_due_date", "date_source",
-              "date_evidence", "attachments", "xlsx_update", "detail", "review_reason"]
+              "date_evidence", "send_to", "send_to_source", "attachments", "xlsx_update", "detail",
+              "review_reason"]
 
 
 def write_log(path, rows):
@@ -85,7 +86,7 @@ def log_row(run_at, m, result, detail="", xlsx_update="", review_reason=""):
                    original_sender=an.original_sender, exam_due_date=_date(an.exam_due_date),
                    internal_expected_date=_date(an.internal_expected_date),
                    tracking_due_date=_date(an.tracking_due_date), date_source=an.date_source,
-                   date_evidence=an.date_evidence)
+                   date_evidence=an.date_evidence, send_to=an.send_to, send_to_source=an.send_to_source)
     return row
 
 
