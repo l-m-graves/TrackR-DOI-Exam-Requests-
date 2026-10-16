@@ -46,6 +46,7 @@ THIRD_PARTY_CONTACTS = set()   # examination-firm people working for the DOI
 THIRD_PARTY_DOMAINS  = set()   # examination-firm domain(s)
 ACCOUNTANT_CONTACTS  = set()   # internal accountants who coordinate requests
 INTERNAL_DOMAINS     = set()   # the company's own domain(s): any other employee
+MY_ADDRESSES         = set()   # your own address(es); found in Outlook each run - set only if that fails
 ENTITY_NAMES         = ()      # legal-entity names to spot in request scope (optional)
 PRODUCT_NAMES        = ()      # product / line-of-business names to spot in scope (optional)
 
@@ -100,6 +101,7 @@ LEAD_EXAMINERS, EXAMINER_CONTACTS, THIRD_PARTY_CONTACTS, ACCOUNTANT_CONTACTS = (
     {a.strip().lower() for a in group}
     for group in (LEAD_EXAMINERS, EXAMINER_CONTACTS, THIRD_PARTY_CONTACTS, ACCOUNTANT_CONTACTS))
 MUST_BE_SENT_TO = {a.strip().lower() for a in MUST_BE_SENT_TO if a and a.strip()}
+MY_ADDRESSES = {a.strip().lower() for a in MY_ADDRESSES if a and a.strip()}
 
 EXAMINER_SIDE = {"lead_examiner", "examiner", "third_party"}
 INTERNAL_SIDE = {"accountant", "internal"}
@@ -239,10 +241,11 @@ def _norm(text: str) -> str:
 
 
 def important_attachments(names) -> list:
-    """File names that contain any IMPORTANT_WORDS (after normalising), images excluded."""
+    """File names that contain any IMPORTANT_WORDS (after normalising) or a request ID
+    ('Sample Group Exam - FIN-53 Support.docx'), images excluded."""
     keys = [_norm(w) for w in IMPORTANT_WORDS]
     return [n for n in names
-            if not n.lower().endswith(IGNORE_EXT) and any(k in _norm(n) for k in keys)]
+            if not n.lower().endswith(IGNORE_EXT) and (any(k in _norm(n) for k in keys) or find_id(n))]
 
 
 INVALID_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
@@ -355,6 +358,26 @@ def qualify(m: Mail, approved_senders=()) -> tuple[bool, str]:
 
 
 # --- Outlook side ----------------------------------------------------------
+def own_addresses(ns) -> set:
+    """Your own address(es), from the accounts signed in to Outlook. You are CC'd or forwarded
+    request emails, but you are never a request's Contact - so these are left out of column L."""
+    found = set()
+    try:
+        for account in ns.Accounts:
+            address = (getattr(account, "SmtpAddress", "") or "").strip().lower()
+            if address:
+                found.add(address)
+    except Exception:
+        pass
+    try:
+        user = ns.CurrentUser.AddressEntry.GetExchangeUser()
+        if user and user.PrimarySmtpAddress:
+            found.add(user.PrimarySmtpAddress.lower())
+    except Exception:
+        pass
+    return found
+
+
 def _outlook():
     import win32com.client
     return win32com.client.Dispatch("Outlook.Application").GetNamespace("MAPI")
@@ -412,7 +435,9 @@ def fetch_candidates(since: datetime, attach_dir=None, approved_senders=(), skip
     from doi_analysis import detect                              # pure module; imports this one
     accepted, rejected, review = [], [], []
     handled = set()
-    for folder in inbox_folders(_outlook().GetDefaultFolder(6)):     # 6 = Inbox
+    ns = _outlook()
+    MY_ADDRESSES.update(own_addresses(ns))
+    for folder in inbox_folders(ns.GetDefaultFolder(6)):     # 6 = Inbox
         try:
             items = folder.Items.Restrict(f"[ReceivedTime] >= '{since:%m/%d/%Y} 12:00 AM'")   # Jet
             items = items.Restrict(subject_filter())                                        # DASL

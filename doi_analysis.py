@@ -20,18 +20,44 @@ HEADER_FIELD = re.compile(r"^[ \t>]*(Sent|Date|To|Cc|Subject):", re.I | re.M)
 MARKER = re.compile(r"^[ \t>]*(-{2,}\s*(Original|Forwarded) Message\s*-*|_{10,}|Begin forwarded message:)\s*$",
                     re.I | re.M)
 ADDRESS = re.compile(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+")
+X500 = re.compile(r"/O=", re.I)          # Exchange's internal address form - only your own company's people have one
 
 
 @dataclass
 class Segment:
-    author: str            # address ('' if the header shows only a name)
+    author: str            # address ('' if the header shows only a name nobody on the email matches)
     author_name: str
     text: str
+    exchange: bool = False # header shows an Exchange (X500) address: someone inside the company
 
 
-def segments(body: str, sender: str) -> list:
+def _tokens(name) -> frozenset:
+    """'Lee, Jordan' and 'Jordan Lee' -> the same key."""
+    return frozenset(t for t in re.findall(r"[a-z]+", (name or "").lower()) if len(t) > 1)
+
+
+def name_book(m) -> dict:
+    """Display name -> address for the people on this email (sender, To, CC). Classic Outlook
+    often quotes colleagues as 'From: Lastname, Firstname' with no address; this finds the
+    address when that person is also on the email. Names shared by two addresses are dropped."""
+    book, clash = {}, set()
+    pairs = list((getattr(m, "names", None) or {}).items()) + [(m.sender, getattr(m, "sender_name", ""))]
+    for addr, name in pairs:
+        key = _tokens(name)
+        if not key or not addr:
+            continue
+        if book.get(key, addr) != addr:
+            clash.add(key)
+        book[key] = addr
+    for key in clash:
+        del book[key]
+    return book
+
+
+def segments(body: str, sender: str, names=None) -> list:
     """Split a message into who-wrote-what, newest first. Segment 0 is the current sender's
-    own words; each later one starts at a quoted/forwarded 'From: ... Sent/Date: ...' header."""
+    own words; each later one starts at a quoted/forwarded 'From: ... Sent/Date: ...' header.
+    names: name_book() of the email, to find the address of a name-only 'From:' line."""
     body = body or ""
     cuts = []
     for m in HEADER_FROM.finditer(body):
@@ -50,7 +76,8 @@ def segments(body: str, sender: str) -> list:
         text = chunk[chunk.find("\n", fields[-1].end()) + 1:] if fields else chunk   # after the header
         addr = ADDRESS.search(m.group(1))
         name = re.sub(r"[<\[].*", "", m.group(1)).strip().strip('"')
-        parts.append(Segment(addr.group(0).lower() if addr else "", name, text))
+        author = addr.group(0).lower() if addr else (names or {}).get(_tokens(name), "")
+        parts.append(Segment(author, name, text, exchange=bool(X500.search(m.group(1)))))
     return parts
 
 
@@ -96,7 +123,7 @@ def detect(m, approved_senders=()) -> Detection:
     on several signals - the CURRENT sender's role, the ORIGINAL sender inside a forward, DOI
     wording, a request ID anywhere (subject, body, attachment) - and anything uncertain goes to
     review instead of being silently accepted or dropped."""
-    segs = segments(m.body, m.sender)
+    segs = segments(m.body, m.sender, name_book(m))
     orig = original_sender(segs)
     det = Detection("reject", "low", sender_role=F.role_of(m.sender, approved_senders),
                     original_sender=orig, original_role=F.role_of(orig, approved_senders) if orig else "")
@@ -235,11 +262,17 @@ def _unique(items):
 
 
 def analyze(m, request_id, approved_senders=()) -> Analysis:
-    segs = segments(m.body, m.sender)
+    segs = segments(m.body, m.sender, name_book(m))
     orig = original_sender(segs)
     an = Analysis(request_id, kind=classify(m.subject, m.body), current_sender=m.sender, original_sender=orig,
                   subject_area=topic_from_subject(m.subject, request_id) or "")
     roles = [F.role_of(s.author or (m.sender if i == 0 else ""), approved_senders) for i, s in enumerate(segs)]
+    roles = ["internal" if r == "unknown" and s.exchange else r for s, r in zip(segs, roles)]
+
+    def who(i, seg):                                   # for the log: who stated a date
+        if i == 0:
+            return m.sender
+        return seg.author or (f"forwarded part from {seg.author_name}" if seg.author_name else "a forwarded part")
     examiner_text = [s.text for s, r in zip(segs, roles) if r in F.EXAMINER_SIDE]
     own_and_examiner = [segs[0].text] + examiner_text            # substance, without old internal chatter
     attachments = list(m.attachment_texts.items())
@@ -268,13 +301,13 @@ def analyze(m, request_id, approved_senders=()) -> Analysis:
                 an.date_notes.append(due["note"] + " (examiner)")
         elif role in F.INTERNAL_SIDE:
             for d in set(due["dates"]) | set(exp["dates"]):
-                internal.setdefault(d, f"internal ({seg.author or m.sender})")
+                internal.setdefault(d, f"internal ({who(i, seg)})")
                 evidence.setdefault(d, (exp["evidence"] or due["evidence"]))
             if due["note"] and not due["dates"] and i == 0:
                 an.date_notes.append(due["note"])
         else:
             for d in due["dates"]:
-                unverified.setdefault(d, seg.author or m.sender)
+                unverified.setdefault(d, who(i, seg))
             if due["note"] and not due["dates"] and i == 0:
                 an.date_notes.append(due["note"])
     request_doc_trusted = any(r in F.EXAMINER_SIDE for r in roles) or roles[0] in F.INTERNAL_SIDE

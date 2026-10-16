@@ -107,7 +107,7 @@ class UpsertTests(unittest.TestCase):
         self.assertEqual(ws[f"C{r}"].number_format, ws["C4"].number_format)  # style copied from first row
         self.assertEqual(ws[f"D{r}"].value, "DOI-TEST-60 Request - Claims Handling")
         self.assertEqual(ws[f"I{r}"].value, "Not Started")
-        self.assertEqual(ws[f"L{r}"].value, "Jordan Lee <examiner@example.test>")
+        self.assertIsNone(ws[f"L{r}"].value)      # the examiner is never the Contact; nobody internal was asked yet
         self.assertIn(note_ref("FAKE60"), ws[f"O{r}"].value)
         # columns left for a person
         for col in "BGKM":

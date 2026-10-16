@@ -17,6 +17,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 
+import doi_filter as F
 from doi_filter import REQUEST_ID, canonical_id, message_ref
 from due_dates import find_due, find_expected
 from email_types import (ADVANCES_TO_IN_PROGRESS, CREATES_ROW, DUE_DATE_KINDS, LABEL,
@@ -92,12 +93,24 @@ def _day(value):
 
 
 def contact(m, kind: str = "other", asked=None) -> str:
-    """Who the request's contact is. When an internal coordinator assigns or asks for
-    information, it's the people on the To line (the ones being asked) - the person running
-    this may only be CC'd. Otherwise it's the sender."""
-    if (kind == "assignment" or asked) and m.to:
-        return "; ".join(f"{m.names[a]} <{a}>" if m.names.get(a) else a for a in m.to)
-    return f"{m.sender_name} <{m.sender}>" if m.sender_name else m.sender
+    """The request's Contact: the person INSIDE the company who was asked to provide the
+    information - the To line of an internal email that assigns or asks for it. Left out:
+    you (CC'd or forwarded, never the contact), the accountants coordinating the request, the
+    team mailbox (MUST_BE_SENT_TO), and anyone on the examiner side. CC is FYI, not asked.
+    Nobody left (e.g. the examiner's own email) -> '' and column L stays blank until the
+    internal email naming the person arrives. Nothing is guessed."""
+    people = asked if asked else (m.to if kind == "assignment" else [])
+    keep = [a for a in people
+            if a not in F.MY_ADDRESSES and a not in F.MUST_BE_SENT_TO
+            and F.role_of(a) not in F.EXAMINER_SIDE | {"accountant"}]
+    return "; ".join(f"{m.names[a]} <{a}>" if m.names.get(a) else a for a in keep)
+
+
+def only_you(value) -> bool:
+    """A Contact cell holding nothing but your own address - written by an earlier version of
+    this program, never by you on purpose - may be replaced."""
+    found = set(re.findall(r"[\w.+'-]+@[\w-]+(?:\.[\w-]+)+", str(value or "").lower()))
+    return bool(found) and found <= F.MY_ADDRESSES
 
 
 # --- safety checks ------------------------------------------------------------
@@ -261,10 +274,14 @@ def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None, sent=
             ws[f"{COL_RECEIVED}{row}"] = received_day
             changes.append("received date")
 
-        # Contact: fill if blank; never replace what a person typed.
-        if not ws[f"{COL_CONTACT}{row}"].value:
-            ws[f"{COL_CONTACT}{row}"] = contact(m, kind, an.asked)
-            changes.append("contact")
+        # Contact: fill if blank; never replace what a person typed (except a cell holding only
+        # your own address, which an earlier version wrote by mistake).
+        current = ws[f"{COL_CONTACT}{row}"].value
+        if not current or only_you(current):
+            who = contact(m, kind, an.asked)
+            if who:
+                ws[f"{COL_CONTACT}{row}"] = who
+                changes.append("contact" if not current else "contact (replaced your own address)")
 
         # Due Date: the tracking date (examiner's deadline; else the internal expected date as a
         # labelled fallback), only into an EMPTY cell. A different date is never chosen silently:

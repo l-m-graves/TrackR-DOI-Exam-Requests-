@@ -105,3 +105,92 @@ class CsvAttachmentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OutlookInternalForwardTests(unittest.TestCase):
+    """Classic Outlook quotes colleagues as 'From: Lastname, Firstname' - no address."""
+    BODY = ("Adding the team - see below.\n\n"
+            "From: Lee, Jordan\n"
+            "Sent: Thursday, October 7, 2027 9:12 AM\n"
+            "To: Accountant, Ana <ana.accountant@corp.test>\n"
+            "Subject: RE: FIN-501 Request - Payroll\n\n"
+            "We expect to provide the payroll support by October 20, 2027.\n")
+
+    def setUp(self):
+        p = mock.patch.multiple(doi_filter, **E.ROLES)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def analyze(self, names=None, body=BODY, attachments=None):
+        from doi_analysis import analyze
+        m = E.mail("RE: FIN-501 Request - Payroll", body, "ana.accountant@corp.test",
+                   received=datetime(2027, 10, 7, 10), names=names or {})
+        m.attachment_texts = attachments or {}
+        return analyze(m, "FIN-501")
+
+    def test_name_found_on_the_email_gives_the_address_and_role(self):
+        an = self.analyze(names={"jordan.lee@corp.test": "Jordan Lee"})
+        self.assertEqual(f"{an.internal_expected_date:%Y-%m-%d}", "2027-10-20")
+        self.assertIsNone(an.exam_due_date)                    # a colleague's date is never the DOI's
+        self.assertFalse(any("not in the role settings" in r for r in an.review))
+
+    def test_unknown_name_is_labelled_as_the_forwarded_part_not_the_forwarder(self):
+        an = self.analyze()
+        note = next(r for r in an.review if "not in the role settings" in r)
+        self.assertIn("forwarded part from Lee, Jordan", note)
+        self.assertNotIn("ana.accountant", note)
+
+    def test_exchange_address_means_internal(self):
+        body = self.BODY.replace("From: Lee, Jordan", "From: Lee, Jordan </O=EXCHANGELABS/OU=EXCHANGE/CN=RECIPIENTS/CN=JLEE>")
+        an = self.analyze(body=body)
+        self.assertEqual(f"{an.internal_expected_date:%Y-%m-%d}", "2027-10-20")
+
+    def test_attachment_named_with_the_request_id_is_a_request_document(self):
+        doc = {"2027-10-07_Sample Group Exam - FIN-501 Payroll Support.docx":
+               "FIN-501 Payroll. Please provide the payroll registers by October 22, 2027."}
+        an = self.analyze(body="Please see the attached DOI request.", attachments=doc)
+        self.assertEqual(f"{an.exam_due_date:%Y-%m-%d}", "2027-10-22")
+        self.assertTrue(doi_filter.important_attachments(list(doc)))
+        self.assertFalse(doi_filter.important_attachments(["Quarterly newsletter.pdf"]))
+
+
+class ContactTests(unittest.TestCase):
+    """Column L = the person inside the company asked to provide the information."""
+    ME = "intern@corp.test"
+
+    def setUp(self):
+        p = mock.patch.multiple(doi_filter, **dict(E.ROLES, MUST_BE_SENT_TO={"audit@corp.test"},
+                                                   MY_ADDRESSES={self.ME}))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def contact(self, sender, to, kind="other", names=None):
+        from doi_analysis import analyze
+        from upsert_tracker import contact
+        m = E.mail("FIN-601 Request - Claims", "Please provide the DOI examination claims listing.", sender,
+                   to=to, cc=(), names=names or {})
+        return contact(m, kind, analyze(m, "FIN-601").asked)
+
+    def test_the_person_asked_inside_the_company(self):
+        self.assertEqual(self.contact("ana.accountant@corp.test", ["pat.claims@corp.test"],
+                                      names={"pat.claims@corp.test": "Pat Claims"}),
+                         "Pat Claims <pat.claims@corp.test>")
+
+    def test_never_you_the_mailbox_an_accountant_or_the_examiner(self):
+        self.assertEqual(self.contact("ana.accountant@corp.test", [self.ME]), "")         # forwarded to you
+        self.assertEqual(self.contact("ana.accountant@corp.test",
+                                      [self.ME, "audit@corp.test", "ana.accountant@corp.test",
+                                       "lead.examiner@doi-state.test", "pat.claims@corp.test"]),
+                         "pat.claims@corp.test")
+        self.assertEqual(self.contact("lead.examiner@doi-state.test", ["audit@corp.test"]), "")   # examiner's email
+
+    def test_a_cell_holding_only_your_address_may_be_replaced(self):
+        from upsert_tracker import only_you
+        self.assertTrue(only_you(f"Intern Name <{self.ME}>"))
+        self.assertFalse(only_you(f"Intern Name <{self.ME}>; pat.claims@corp.test"))
+        self.assertFalse(only_you("Pat Claims"))                                  # typed by a person
+
+    def test_own_addresses_from_outlook_accounts(self):
+        from types import SimpleNamespace
+        ns = SimpleNamespace(Accounts=[SimpleNamespace(SmtpAddress="Intern@Corp.test")])   # no CurrentUser: fine
+        self.assertEqual(doi_filter.own_addresses(ns), {"intern@corp.test"})

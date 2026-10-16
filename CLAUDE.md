@@ -59,7 +59,7 @@ Outlook (COM) ──Restrict()──> extract() ──> Mail dataclass ──> q
 
 ## Detection (`doi_analysis.detect`)
 
-The five rules below still accept on their own (high). Otherwise signals decide: request ID anywhere (subject → message parts → attachment text), current sender's role, **original sender inside a forward** (`segments()` splits `From:` + `Sent:/To:/Subject:` header blocks), DOI wording (`DOI_TERMS`). Examiner-side origin + ID + DOI wording → accept high; internal sender + ID + DOI wording → accept medium; ID + DOI wording from an unconfigured sender, or examiner-side with no ID → **review**; no ID and not examiner-side, or an ID with no DOI wording → reject. `MUST_BE_SENT_TO`, if set, is a hard rule for **external** senders only (examiner side / unknown); internal forwards and replies are judged on signals (the user is often only CC'd). Review items are logged (result `review`) and never written to the tracker. Outlook pre-filter (`subject_filter`) no longer requires attachments and also matches ID prefixes in the body.
+The five rules below still accept on their own (high). Otherwise signals decide: request ID anywhere (subject → message parts → attachment text), current sender's role, **original sender inside a forward** (`segments()` splits `From:` + `Sent:/To:/Subject:` header blocks; classic Outlook quotes colleagues as `From: Lastname, Firstname` with **no address** — `name_book(m)` resolves such names against the email's own sender/To/CC names (`'Lee, Jordan'` = `'Jordan Lee'`), an Exchange X500 `/O=` address means internal, and an unresolved part is labelled `forwarded part from <name>`, never as the current sender), DOI wording (`DOI_TERMS`). Examiner-side origin + ID + DOI wording → accept high; internal sender + ID + DOI wording → accept medium; ID + DOI wording from an unconfigured sender, or examiner-side with no ID → **review**; no ID and not examiner-side, or an ID with no DOI wording → reject. `MUST_BE_SENT_TO`, if set, is a hard rule for **external** senders only (examiner side / unknown); internal forwards and replies are judged on signals (the user is often only CC'd). Review items are logged (result `review`) and never written to the tracker. Outlook pre-filter (`subject_filter`) no longer requires attachments and also matches ID prefixes in the body.
 
 ## Dates (`doi_analysis.analyze`)
 
@@ -72,7 +72,7 @@ An email qualifies only if **all** pass:
 2. Sender's domain in `SENDER_DOMAINS` **or** the sender's address approved (`Y`) in `DOI_Contacts.csv` (passed in as `approved_senders`). Never auto-approve: recording is automatic, trusting is a human decision (else anyone writing `FIN-53` in a subject could whitelist themselves)
 3. *Optional:* `MUST_BE_SENT_TO` appears on To or CC — **default empty = rule skipped**, because the To line moves between the examiner and the assigned contact as a request progresses
 4. Body contains one of `BODY_PHRASES`
-5. At least one attachment whose **file name** contains `DOI`, `Request`, or `Follow-up` — matched case/space/hyphen/underscore-insensitive via `_norm()`; image extensions (`.png .gif .jpg .jpeg`) ignored. Matching is on file name, not document contents.
+5. At least one attachment whose **file name** contains `DOI`, `Request`, `Follow-up` **or a request ID** (real request documents are named `<Company> Group Exam - FIN-53 …`; the same test decides whether an attachment's dates count as the examiner's) — matched case/space/hyphen/underscore-insensitive via `_norm()`; image extensions (`.png .gif .jpg .jpeg`) ignored. Matching is on file name, not document contents.
 
 ## Outlook COM gotchas
 
@@ -100,7 +100,7 @@ Sheet **DOI Exam Tracker**, Excel Table `tblRequests`, header row 3, data from r
 | I | Status | input, dropdown | `"Not Started"` for new rows; **Not Started/blank → In Progress** when an acknowledgment, status update, scope question or response materials email is seen. Never changes any other status |
 | J | Action Flag | formula | **no** |
 | K | Completed On | input, date | no |
-| L | Contact | input, text | yes, if blank ← assignment email's **To** list (the assignees), else the sender, as `Name <smtp>` |
+| L | Contact | input, text | yes, if blank ← **the person inside the company asked to provide the information**: To line of an internal email that assigns/asks (`upsert_tracker.contact()`), minus the user (`MY_ADDRESSES`, read from Outlook's accounts each run by `own_addresses()`), accountants, the `MUST_BE_SENT_TO` mailbox and the examiner side; CC never counts. Nobody left → stays blank (never the sender, never the examiner). A cell holding only the user's own address (an earlier version's mistake) may be replaced (`only_you()`); anything else typed is never overwritten |
 | M | Last Email Sent | input, date | yes ← **the newest email in the request's exchange, whoever sent it** (examiner, accountant, coworker, anyone), among the user's received/CC'd emails about the request (ID in subject, ID found by detection, or same `ConversationID` as an accepted request email) — counts accepted, review **and** rejected messages; plus the user's own Sent Items only if `TRACK_SENT=True` (default False). Newest wins, **only moves forward**, date only, source logged |
 | N | Days Since Last Email | formula | **no** |
 | O | Notes / Latest Update | input, text | append only, never overwrite |
@@ -137,7 +137,7 @@ These templates are **one signal, not the full set** of DOI correspondence; dire
 ## Upsert logic (`upsert_tracker.py`)
 
 - Key = Request ID from subject regex, matched against the first word of column D (same rule as column A's formula). New ID → append row under `tblRequests`: formulas and styles copied from the **first** data row (not the row above — a stray bottom row must not spread), `tbl.ref` + autoFilter extended. D gets RE:/FW: stripped and the ID forced to be the first word.
-- Existing ID → C keeps the **earliest** received date; L filled only if blank (never overwrites typed contacts); O gets one appended line per email ending `[ref xxxxxxxx]` (first 8 hex of SHA-1 of EntryID).
+- Existing ID → C keeps the **earliest** received date; L filled only if blank or only-the-user (never overwrites typed contacts); O gets one appended line per email ending `[ref xxxxxxxx]` (first 8 hex of SHA-1 of EntryID).
 - Idempotent via that ref tag: an email whose ref is already in O is skipped. Nothing changed → no backup, no save.
 - Timestamped backup to `Backups/` next to the tracker before every save.
 - openpyxl requires Excel closed: refuses if `~$<name>` exists or the file can't be opened r+b. Also refuses if the file has charts/images/slicers (openpyxl would delete them).

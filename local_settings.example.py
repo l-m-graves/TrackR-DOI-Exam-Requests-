@@ -31,7 +31,9 @@ EXAMINER_CONTACTS    = set()                        # other examiner addresses
 EXAMINER_DOMAINS     = {"<regulator domain>"}
 THIRD_PARTY_CONTACTS = set()                        # examination-firm people working for the DOI
 THIRD_PARTY_DOMAINS  = {"<exam firm domain>"}       # e.g. the firm(s) the DOI uses
-ACCOUNTANT_CONTACTS  = {"<accountant address>"}     # internal accountants coordinating requests
+ACCOUNTANT_CONTACTS  = {"<accountant address>"}     # internal accountants coordinating requests - fill this in:
+                                                    # they are never put in the Contact column
+# MY_ADDRESSES = {"<your address>"}                 # only if Outlook can't tell the program who you are
 INTERNAL_DOMAINS     = {"<company domain>"}         # any other employee
 # ENTITY_NAMES  = ("<legal entity name>",)          # optional: spotted in request scope
 # PRODUCT_NAMES = ("<product name>",)

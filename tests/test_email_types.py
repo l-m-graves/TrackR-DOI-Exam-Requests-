@@ -3,10 +3,12 @@ import shutil
 import tempfile
 import unittest
 from datetime import datetime
+from unittest import mock
 from pathlib import Path
 
 from openpyxl import load_workbook
 
+import doi_filter
 from doi_filter import Mail, SentMail
 from due_dates import find_due, find_expected
 from email_types import classify, topic_from_subject
@@ -54,6 +56,10 @@ class TemplateFlowTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.tmp)
         self.path = self.tmp / "tracker.xlsx"
         shutil.copy(FIXTURE, self.path)
+        # The templates' team is internal here (example.test is also the default DOI test domain).
+        p = mock.patch.multiple(doi_filter, SENDER_DOMAINS={"doi-state.test"}, INTERNAL_DOMAINS={"example.test"})
+        p.start()
+        self.addCleanup(p.stop)
 
     def assignment(self):
         subject, body = ASSIGNMENT
