@@ -17,7 +17,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 
-from doi_filter import REQUEST_ID
+from doi_filter import REQUEST_ID, message_ref
 from due_dates import find_due, find_expected
 from email_types import (ADVANCES_TO_IN_PROGRESS, CREATES_ROW, DUE_DATE_KINDS, LABEL,
                          classify, topic_from_subject)
@@ -46,8 +46,8 @@ class TrackerError(Exception):
 
 # --- small helpers (pure, unit-tested) ---------------------------------------
 def note_ref(entry_id: str) -> str:
-    """Short, stable tag for one email. EntryIDs are ~140 hex chars; 8 chars of a hash is plenty."""
-    return "ref " + hashlib.sha1(entry_id.encode()).hexdigest()[:8]
+    """Short, stable tag for one email (see doi_filter.message_ref - one definition for both)."""
+    return message_ref(entry_id)
 
 
 def first_word_id(text) -> str:

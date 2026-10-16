@@ -8,6 +8,8 @@ TRACKER_PATH = r"C:\Users\<you>\OneDrive - <Company>\Audit\DOI_Exam_Test_Tracker
 ATTACH_DIR   = r"C:\Users\<you>\OneDrive - <Company>\Audit\DOI_Attachments"
 # Saved types (default): ATTACH_TYPES = (".pdf", ".doc", ".docx", ".png", ".xlsx") - add e.g. ".xls" if needed
 # The log is a FILE path: folder + a file name ending in .csv
+# DOI_Seen_Messages.csv (which emails were already handled) and DOI_Run_Errors.txt (crashes of
+# the hourly run) are kept in the same folder automatically - nothing to set.
 LOG_PATH     = r"C:\Users\<you>\OneDrive - <Company>\Audit\Logs\DOI_Run_Log.csv"
 # Contact directory: every sender/To/CC on request emails, updated each run. New senders are
 # only trusted after you type Y in its Approved column. Add team-meeting contacts there by hand.

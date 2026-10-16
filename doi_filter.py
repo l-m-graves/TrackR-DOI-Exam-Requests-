@@ -4,6 +4,7 @@ Two layers:
   1. Items.Restrict()  - coarse, runs inside Outlook (fast, no Python loop over 10k items)
   2. qualify()         - precise rules in plain Python, testable without Outlook
 """
+import hashlib
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -166,14 +167,16 @@ def last_sent_by_request(sent, accepted) -> dict:
     return latest
 
 
-def last_exchange_email(mails, accepted) -> dict:
+def last_exchange_email(mails, accepted, known_threads=None) -> dict:
     """Request ID -> (newest datetime, source): the latest email in that request's exchange,
     WHOEVER sent it - examiner, accountant, a coworker, anyone - among everything fetched from
     your mailbox: accepted, review AND rejected (a short 'RE: FIN-53 - thanks' isn't a request,
     but it is still the latest email in the exchange). A message belongs to a request when its
     subject names the ID, its detection found the ID, or it is in the same Outlook conversation
-    as an accepted request email (a reply whose subject was changed). Pure Python."""
-    by_thread = {m.conversation_id: rid for m, rid in accepted if m.conversation_id}
+    as an accepted request email (a reply whose subject was changed) - this run's, or one
+    remembered from earlier runs (known_threads, from seen_state). Pure Python."""
+    by_thread = dict(known_threads or {})
+    by_thread.update({m.conversation_id: rid for m, rid in accepted if m.conversation_id})
     latest = {}
     for m in mails:
         if not m.received:
@@ -195,6 +198,12 @@ def merge_last_sent(*sources) -> dict:
             if rid not in merged or when > merged[rid][0]:
                 merged[rid] = (when, label)
     return merged
+
+
+def message_ref(entry_id: str) -> str:
+    """Short, stable tag for one email ('ref 1af3ac90'): 8 hex characters of a hash of Outlook's
+    EntryID. Used in the tracker's Notes, the log and the seen-messages memory."""
+    return "ref " + hashlib.sha1((entry_id or "").encode()).hexdigest()[:8]
 
 
 def _norm(text: str) -> str:
@@ -353,32 +362,67 @@ def read_attachments(msg, m: Mail, rid: str, attach_dir=None) -> list:
     return saved
 
 
-def fetch_candidates(since: datetime, folder_path=("Inbox", "DOI Exam"), attach_dir=None, approved_senders=()):
-    """Coarse filter inside Outlook, then the Python decision (doi_analysis.detect).
-    Returns (accepted, rejected, review):
+def inbox_folders(folder):
+    """The Inbox and every folder inside it, however deep - so emails count wherever your
+    Outlook rules (or you) put them. A folder that can't be listed is skipped, not fatal."""
+    yield folder
+    try:
+        children = list(folder.Folders)
+    except Exception:
+        children = []
+    for child in children:
+        yield from inbox_folders(child)
+
+
+def fetch_candidates(since: datetime, attach_dir=None, approved_senders=(), skip_refs=()):
+    """Coarse filter inside Outlook, then the Python decision (doi_analysis.detect), over the
+    whole Inbox tree. Returns (accepted, rejected, review):
       accepted [(Mail, request_id)]  rejected [(Mail, reason)]  review [(Mail, Detection)].
-    Attachments of anything not rejected are saved/read here - the Outlook item is only
-    reachable in this function - and the email is judged again with their text."""
+    skip_refs: emails already fully processed on an earlier run (see seen_state) - not
+    opened again. The same email in two folders is handled once. Attachments of anything not
+    rejected are saved/read here - the Outlook item is only reachable in this function - and
+    the email is judged again with their text."""
     from doi_analysis import detect                              # pure module; imports this one
-    folder = _outlook().GetDefaultFolder(6)                  # Inbox
-    for name in folder_path[1:]:                             # walk into sub-folders by name
-        folder = folder.Folders(name)
-    items = folder.Items
-    items = items.Restrict(f"[ReceivedTime] >= '{since:%m/%d/%Y} 12:00 AM'")     # Jet syntax
-    items = items.Restrict(subject_filter())                                     # DASL syntax
     accepted, rejected, review = [], [], []
-    for msg in items:
-        if msg.Class != 43:                                  # olMail only
+    handled = set()
+    for folder in inbox_folders(_outlook().GetDefaultFolder(6)):     # 6 = Inbox
+        try:
+            items = folder.Items.Restrict(f"[ReceivedTime] >= '{since:%m/%d/%Y} 12:00 AM'")   # Jet
+            items = items.Restrict(subject_filter())                                        # DASL
+            messages = list(items)
+        except Exception:                                    # e.g. a folder of calendar items
             continue
+        for msg in messages:
+            try:
+                if msg.Class != 43:                          # olMail only
+                    continue
+                entry_id = msg.EntryID
+            except Exception:
+                continue
+            if entry_id in handled or message_ref(entry_id) in skip_refs:
+                continue
+            handled.add(entry_id)
+            accepted, rejected, review = _judge(msg, detect, attach_dir, approved_senders,
+                                                accepted, rejected, review)
+    return accepted, rejected, review
+
+
+def _judge(msg, detect, attach_dir, approved_senders, accepted, rejected, review):
+    """Detect one Outlook email (again once its attachments are read) and file it in a list.
+    An email Outlook can't hand over (e.g. still downloading) is skipped this run, not fatal."""
+    try:
         m = extract(msg)
-        first = detect(m, approved_senders)
-        if first.status != "reject" and m.attachments:
-            m.saved = read_attachments(msg, m, first.request_id or "_Review", attach_dir)
-        m.detection = det = detect(m, approved_senders)      # again, now knowing the attachments
-        if det.status == "accept":
-            accepted.append((m, det.request_id))
-        elif det.status == "review":
-            review.append((m, det))
-        else:
-            rejected.append((m, det.reasons[0]))
+    except Exception as e:
+        print(f"  skipped an email Outlook could not read: {e}")
+        return accepted, rejected, review
+    first = detect(m, approved_senders)
+    if first.status != "reject" and m.attachments:
+        m.saved = read_attachments(msg, m, first.request_id or "_Review", attach_dir)
+    m.detection = det = detect(m, approved_senders)          # again, now knowing the attachments
+    if det.status == "accept":
+        accepted.append((m, det.request_id))
+    elif det.status == "review":
+        review.append((m, det))
+    else:
+        rejected.append((m, det.reasons[0]))
     return accepted, rejected, review
