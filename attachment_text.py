@@ -4,6 +4,7 @@
   .docx  - Word: read straight from the file (it is a zip of XML) - no extra install
   .xlsx  - Excel: openpyxl, already required by the project
   .pdf   - needs `pip install pypdf`; without it the file is reported as not read
+  .csv   - plain text, read as is
   other  - .doc, images (.png ...) are reported as not read (no OCR - out of scope)
 
 Never raises: every file gets a status, and anything not read is flagged for review.
@@ -48,7 +49,11 @@ def _pdf(path):
     return "\n".join(page.extract_text() or "" for page in reader.pages)
 
 
-READERS = {".docx": _docx, ".xlsx": _xlsx, ".pdf": _pdf}
+def _csv(path):
+    return Path(path).read_text(encoding="utf-8-sig", errors="replace")
+
+
+READERS = {".docx": _docx, ".xlsx": _xlsx, ".pdf": _pdf, ".csv": _csv}
 
 
 def read_text(path) -> tuple:

@@ -59,11 +59,37 @@ except ImportError:
         pass
 
 REQUEST_ID = re.compile(REQUEST_ID_PATTERN)     # compiled after local_settings so an override applies
+# Case-sensitive on purpose: with a pattern that allows 'FIN 45' / 'IT39', ignoring case would
+# read ordinary words ('send it 5 days early') as request IDs.
+
+
+def canonical_id(raw: str) -> str:
+    """One spelling per request, whatever the email wrote: 'FIN 45' / 'FIN45' -> 'FIN-45'.
+    IDs already hyphenated ('FIN-45', 'DOI-TEST-01') are unchanged. The tracker, the log and the
+    memory all key on this form, so 'FIN 45' and 'FIN-45' are the same request."""
+    return re.sub(r"^([A-Z]+) ?(?=\d)", r"\1-", (raw or "").strip().upper())
+
+
+def find_id(text) -> str:
+    """The first request ID in a text, in canonical form, or ''."""
+    hit = REQUEST_ID.search(text or "")
+    return canonical_id(hit.group(0)) if hit else ""
+
+
+def log_file(path):
+    """LOG_PATH may be the log FILE or just its folder - a folder gets DOI_Run_Log.csv inside it."""
+    if not path or Path(str(path)).suffix.lower() == ".csv":
+        return path
+    return str(Path(str(path)) / "DOI_Run_Log.csv")
+
+
+LOG_PATH = log_file(LOG_PATH)
 
 
 def normalize_domains(domains) -> set:
-    """Forgive '@insurance.ca.gov' / 'Insurance.CA.gov': the check compares lower-case text after the '@'."""
-    return {d.strip().lstrip("@").lower() for d in domains}
+    """Forgive '@insurance.ca.gov', 'Insurance.CA.gov' or a whole address ('someone@insurance.ca.gov'):
+    the check compares the lower-case text after the '@'."""
+    return {d.strip().lower().rsplit("@", 1)[-1] for d in domains if d and d.strip()}
 
 
 SENDER_DOMAINS = normalize_domains(SENDER_DOMAINS)
@@ -73,6 +99,7 @@ INTERNAL_DOMAINS = normalize_domains(INTERNAL_DOMAINS)
 LEAD_EXAMINERS, EXAMINER_CONTACTS, THIRD_PARTY_CONTACTS, ACCOUNTANT_CONTACTS = (
     {a.strip().lower() for a in group}
     for group in (LEAD_EXAMINERS, EXAMINER_CONTACTS, THIRD_PARTY_CONTACTS, ACCOUNTANT_CONTACTS))
+MUST_BE_SENT_TO = {a.strip().lower() for a in MUST_BE_SENT_TO if a and a.strip()}
 
 EXAMINER_SIDE = {"lead_examiner", "examiner", "third_party"}
 INTERNAL_SIDE = {"accountant", "internal"}
@@ -86,7 +113,7 @@ def role_of(address, approved=()) -> str:
     d = a.split("@")[-1]
     if a in LEAD_EXAMINERS:
         return "lead_examiner"
-    if a in EXAMINER_CONTACTS or d in EXAMINER_DOMAINS or d in SENDER_DOMAINS:
+    if a in EXAMINER_CONTACTS or d in EXAMINER_DOMAINS:
         return "examiner"
     if a in THIRD_PARTY_CONTACTS or d in THIRD_PARTY_DOMAINS:
         return "third_party"
@@ -94,6 +121,8 @@ def role_of(address, approved=()) -> str:
         return "accountant"
     if d in INTERNAL_DOMAINS:
         return "internal"
+    if d in SENDER_DOMAINS:             # legacy list - checked last, so if it also holds your own
+        return "examiner"               # company's domain, colleagues still count as internal
     if a in approved:
         return "approved"
     return "unknown"
@@ -151,8 +180,7 @@ def match_sent(sent, accepted) -> list:
     by_thread = {m.conversation_id: rid for m, rid in accepted if m.conversation_id}
     matched = []
     for s in sent:
-        hit = REQUEST_ID.search(s.subject or "")
-        rid = hit.group(0) if hit else by_thread.get(s.conversation_id)
+        rid = find_id(s.subject) or by_thread.get(s.conversation_id)
         if rid and s.sent_on:
             matched.append((s, rid))
     return matched
@@ -181,9 +209,8 @@ def last_exchange_email(mails, accepted, known_threads=None) -> dict:
     for m in mails:
         if not m.received:
             continue
-        hit = REQUEST_ID.search(m.subject or "")
         det_id = getattr(m.detection, "request_id", "") if m.detection is not None else ""
-        rid = hit.group(0) if hit else (det_id or by_thread.get(m.conversation_id))
+        rid = find_id(m.subject) or det_id or by_thread.get(m.conversation_id)
         if rid and (rid not in latest or m.received > latest[rid][0]):
             latest[rid] = (m.received, f"latest email in the exchange, from {m.sender}")
     return latest
@@ -312,7 +339,7 @@ def extract_sent(msg) -> SentMail:
 def qualify(m: Mail, approved_senders=()) -> tuple[bool, str]:
     """Return (ok, reason). Every rejection names the rule that failed - that is your audit trail.
     approved_senders: individual addresses you approved in the contact directory."""
-    rid = REQUEST_ID.search(m.subject)
+    rid = find_id(m.subject)
     if not rid:
         return False, "subject has no request ID"
     if m.sender.split("@")[-1].lower() not in SENDER_DOMAINS and m.sender not in approved_senders:
@@ -324,7 +351,7 @@ def qualify(m: Mail, approved_senders=()) -> tuple[bool, str]:
         return False, "body lacks request wording"
     if not important_attachments(m.attachments):
         return False, "no attachment named with DOI / Request / Follow-up"
-    return True, rid.group(0)
+    return True, rid
 
 
 # --- Outlook side ----------------------------------------------------------

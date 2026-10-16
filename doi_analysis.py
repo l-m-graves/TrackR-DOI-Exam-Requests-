@@ -83,9 +83,9 @@ def _find_id(m, segs):
     places = [("subject", m.subject)] + [(f"message part {i}", s.text) for i, s in enumerate(segs)]
     places += [(f"attachment {n}", t) for n, t in m.attachment_texts.items()]
     for where, text in places:
-        hit = F.REQUEST_ID.search(text or "")
-        if hit:
-            return hit.group(0), where
+        rid = F.find_id(text)
+        if rid:
+            return rid, where
     return "", ""
 
 
@@ -119,8 +119,10 @@ def detect(m, approved_senders=()) -> Detection:
         det.status, det.confidence = "accept", "high"
         det.reasons.insert(0, "passes all five qualification rules")
         return det
-    if F.MUST_BE_SENT_TO and not F.MUST_BE_SENT_TO & set(m.to + m.cc):
-        det.reasons.insert(0, why)                     # an explicit setting is a hard rule
+    if F.MUST_BE_SENT_TO and not internal_sender and not F.MUST_BE_SENT_TO & set(m.to + m.cc):
+        # An explicit setting is a hard rule for EXTERNAL emails only. Internal forwards and
+        # replies (often just to you, CC'd) are judged on the signals below instead.
+        det.reasons.insert(0, "external email not addressed to MUST_BE_SENT_TO")
         return det
     if not rid:
         if examiner_origin and doi_words:
@@ -318,8 +320,8 @@ def analyze(m, request_id, approved_senders=()) -> Analysis:
         an.submission_status = "files ready - not confirmed as submitted"
     for hit in F.REQUEST_ID.finditer(event_text):
         near = event_text[max(0, hit.start() - 30): hit.end() + 30]
-        if hit.group(0) != request_id and re.search(r"follow[- ]?(?:up|s up)", near, re.I):
-            an.parent_request_id = hit.group(0)
+        if F.canonical_id(hit.group(0)) != request_id and re.search(r"follow[- ]?(?:up|s up)", near, re.I):
+            an.parent_request_id = F.canonical_id(hit.group(0))
             break
     an.request_type = ("follow_up" if an.parent_request_id or "follow_up" in an.events else
                        "clarification" if "clarification" in an.events else

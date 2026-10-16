@@ -1,6 +1,9 @@
 # Real settings and real data never leave the laptop
-Local_Settings.py
-local_settings.py
+Local_Settings*.py
+local_settings*.py
+!local_settings.example.py
+# personal copies with real domains/addresses written into the code (e.g. doi_filter_0.0.py)
+doi_filter_*.py
 *.xlsx
 ~$*
 Backups/

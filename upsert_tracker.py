@@ -17,7 +17,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.formula.translate import Translator
 
-from doi_filter import REQUEST_ID, message_ref
+from doi_filter import REQUEST_ID, canonical_id, message_ref
 from due_dates import find_due, find_expected
 from email_types import (ADVANCES_TO_IN_PROGRESS, CREATES_ROW, DUE_DATE_KINDS, LABEL,
                          classify, topic_from_subject)
@@ -60,7 +60,9 @@ def first_word_id(text) -> str:
 def request_text(subject: str, rid: str) -> str:
     """Column D text. Team-template subjects ('DOI Exam Request FIN-53 – Topic') become the
     tracker's own pattern 'FIN-53 Request - Topic'. Otherwise: drop RE:/FW: and make sure the
-    Request ID is the first word (the sheet's formulas read it from there)."""
+    Request ID is the first word (the sheet's formulas read it from there). 'FIN 45' in a subject
+    is written as 'FIN-45' - column A's formula needs the hyphenated form."""
+    subject = REQUEST_ID.sub(lambda h: canonical_id(h.group(0)), subject or "")
     topic = topic_from_subject(subject, rid)
     if topic:
         return f"{rid} Request - {topic}"

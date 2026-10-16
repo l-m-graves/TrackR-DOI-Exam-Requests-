@@ -207,9 +207,9 @@ def _run(args):
     if contacts is not None:
         new = []
         for m, why in accepted + rejected + review:
-            rid = doi_filter.REQUEST_ID.search(m.subject)
+            rid = doi_filter.find_id(m.subject)
             if rid and ref(m) in news:
-                new += doi_contacts.observe(contacts, m, rid.group(0), m.received or run_at)
+                new += doi_contacts.observe(contacts, m, rid, m.received or run_at)
         pending = doi_contacts.pending_senders(contacts)
         print(f"Contacts: {len(new)} new, {len(pending)} sender(s) awaiting your approval"
               + (f" - open {Path(doi_filter.CONTACTS_PATH).name} and type Y in Approved" if pending else ""))
