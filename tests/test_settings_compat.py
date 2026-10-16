@@ -410,3 +410,108 @@ class SettingsLocationTests(unittest.TestCase):
         out = subprocess.run([sys.executable, "run.py"], cwd=self.repo, capture_output=True, text=True)
         self.assertEqual(out.returncode, 2)
         self.assertIn("No local_settings.py found", out.stdout)
+
+
+class SubmissionTests(unittest.TestCase):
+    """'FIN-52 support has been uploaded to OneDrive' from inside the company to the examiner."""
+    LEAD = "lead.examiner@doi-state.test"
+    EXAMPLE = "Hello Lee,\n\nFIN-1052 support has been uploaded to OneDrive.\n\nHave a great weekend!\n"
+
+    def setUp(self):
+        p = mock.patch.multiple(doi_filter, **dict(E.ROLES, LEAD_EXAMINERS={self.LEAD}, MY_ADDRESSES={E.INTERN}))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def mail(self, body=EXAMPLE, sender="ana.accountant@corp.test", to=(LEAD,), subject="RE: FIN-1052 Request - Claims"):
+        return E.mail(subject, body, sender, to=to, cc=(E.INTERN,), received=datetime(2027, 10, 8, 16, 0))
+
+    def analyze(self, **kw):
+        from doi_analysis import analyze
+        return analyze(self.mail(**kw), "FIN-1052")
+
+    def test_the_example_is_a_completed_submission(self):
+        an = self.analyze()
+        self.assertTrue(an.completes)
+        self.assertIn("has been uploaded to OneDrive", an.submission_evidence)
+        self.assertIn(self.LEAD, an.submitted_to)
+
+    def test_the_example_is_accepted_without_doi_wording(self):
+        det = detect(self.mail())
+        self.assertEqual((det.status, det.request_id), ("accept", "FIN-1052"))
+
+    def test_internal_handoff_is_not_a_submission(self):
+        self.assertFalse(self.analyze(sender="pat.claims@corp.test", to=("ana.accountant@corp.test",)).completes)
+
+    def test_examiner_uploading_is_not_a_submission(self):
+        self.assertFalse(self.analyze(sender=self.LEAD, to=("ana.accountant@corp.test",)).completes)
+
+    def test_partial_delivery(self):
+        an = self.analyze(body="Hello Lee,\n\nPart of the FIN-1052 support has been uploaded; the remaining items will follow by Friday.\n")
+        self.assertFalse(an.completes)
+        self.assertTrue(an.partial_submission)
+
+    def test_quoted_history_does_not_count(self):
+        body = ("Thanks, will confirm Monday.\n\nFrom: Ana Accountant <ana.accountant@corp.test>\nSent: Friday\n"
+                "To: Lee <lead.examiner@doi-state.test>\nSubject: RE: FIN-1052\n\nFIN-1052 support has been uploaded.\n")
+        self.assertFalse(self.analyze(body=body).completes)
+
+
+FIXTURE_PATH = Path(__import__("os").environ.get("DOI_TRACKER_FIXTURE", Path(__file__).parent / "fixtures" / "DOI_Exam_Test_Tracker_v2.xlsx"))
+
+
+@unittest.skipUnless(FIXTURE_PATH.exists(), "needs a fake-data tracker (DOI_TRACKER_FIXTURE)")
+class SubmissionTrackerTests(unittest.TestCase):
+    """The tracker side: Status Completed, Completed On, never over a person's choice."""
+    LEAD = SubmissionTests.LEAD
+
+    def setUp(self):
+        p = mock.patch.multiple(doi_filter, **dict(E.ROLES, LEAD_EXAMINERS={self.LEAD}, MY_ADDRESSES={E.INTERN}))
+        p.start()
+        self.addCleanup(p.stop)
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        self.path = d / "Tracker.xlsx"
+        shutil.copy(FIXTURE_PATH, self.path)
+
+    def upsert(self, *mails):
+        from upsert_tracker import upsert
+        return upsert(self.path, [(m, "FIN-1052") for m in mails], backup_dir=self.path.parent / "Backups")
+
+    def row(self, actions):
+        from openpyxl import load_workbook
+        ws = load_workbook(self.path)["DOI Exam Tracker"]
+        r = actions[0]["row"]
+        return ws, r
+
+    def request(self):
+        return E.mail("FIN-1052 Request - Claims", "Please provide the DOI examination claims listing by 10/20/27.",
+                      self.LEAD, to=["ana.accountant@corp.test"], cc=[E.INTERN], eid="R1", received=datetime(2027, 10, 4, 9))
+
+    def submission(self, body=SubmissionTests.EXAMPLE, eid="S1"):
+        return E.mail("RE: FIN-1052 Request - Claims", body, "ana.accountant@corp.test", to=[self.LEAD],
+                      cc=[E.INTERN], eid=eid, received=datetime(2027, 10, 8, 16))
+
+    def test_submission_completes_the_row(self):
+        self.upsert(self.request())
+        acts = self.upsert(self.submission())
+        ws, r = self.row(acts)
+        self.assertEqual(ws[f"I{r}"].value, "Completed")
+        self.assertEqual(ws[f"K{r}"].value, datetime(2027, 10, 8))
+        self.assertIn("submitted to", ws[f"O{r}"].value)
+        self.assertEqual(self.upsert(self.submission())[0]["action"], "unchanged")    # same email again: nothing
+
+    def test_on_hold_is_left_alone(self):
+        acts = self.upsert(self.request())
+        ws, r = self.row(acts)
+        ws[f"I{r}"] = "On Hold"
+        ws.parent.save(self.path)
+        ws, r = self.row(self.upsert(self.submission()))
+        self.assertEqual(ws[f"I{r}"].value, "On Hold")
+        self.assertIn("status left 'On Hold'", ws[f"O{r}"].value)
+
+    def test_partial_submission_is_not_complete(self):
+        self.upsert(self.request())
+        ws, r = self.row(self.upsert(self.submission("Hello Lee,\n\nSome of the FIN-1052 support has been uploaded; the rest will follow.\n")))
+        self.assertNotEqual(ws[f"I{r}"].value, "Completed")
+        self.assertIsNone(ws[f"K{r}"].value)
+        self.assertIn("partial submission", ws[f"O{r}"].value)

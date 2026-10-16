@@ -31,6 +31,8 @@ LAST_ROW = 1000         # the trk* named ranges and dropdowns stop at row 1000
 # Columns the script fills (letters match the sheet). Everything else is either
 # a formula (A, E, F, H, J, N) or left for a person to type (B, K).
 COL_RECEIVED, COL_REQUEST, COL_STATUS, COL_CONTACT, COL_NOTES = "C", "D", "I", "L", "O"
+COL_COMPLETED = "K"
+COMPLETES_FROM = ("", "Not Started", "In Progress", "Awaiting Response")   # never On Hold / anything else
 COL_DUE, COL_LAST_SENT = "G", "M"
 
 # File parts openpyxl cannot carry through a save. If the tracker ever gains
@@ -220,6 +222,44 @@ def _advance_status(ws, row, kind, changes):
         changes.append(f"status In Progress ({LABEL[kind].lower()})")
 
 
+def completed_status(wb) -> str:
+    """The workbook's own word for done (Lists sheet, column A from row 4) - 'Completed' in the
+    template; the Action Flag formula compares against exactly this text."""
+    if "Lists" in wb.sheetnames:
+        for r in range(4, 61):
+            v = wb["Lists"][f"A{r}"].value
+            if v in (None, ""):
+                break
+            if str(v).strip().lower().startswith("complet"):
+                return str(v).strip()
+    return "Completed"
+
+
+def _complete(ws, row, an, m, done_word, changes, extra):
+    """An internal person told the examiner side the support was delivered: Status -> Completed
+    (from Not Started / In Progress / Awaiting Response only) and Completed On = that email's date,
+    only if empty. Partial delivery: In Progress and a note. On Hold or anything else a person
+    chose stays, with a note."""
+    cur = str(ws[f"{COL_STATUS}{row}"].value or "").strip()
+    if an.partial_submission:
+        extra.append(f"partial submission to the examiner - not complete: {an.submission_evidence}")
+        if cur in ("", "Not Started"):
+            ws[f"{COL_STATUS}{row}"] = "In Progress"
+            changes.append("status In Progress (partial submission)")
+        return
+    if not an.completes:
+        return
+    extra.append(f"submitted to {an.submitted_to}: {an.submission_evidence}")
+    if cur in COMPLETES_FROM:
+        ws[f"{COL_STATUS}{row}"] = done_word
+        changes.append(f"status {done_word} (submitted)")
+    elif cur != done_word:
+        extra.append(f"status left '{cur}' - change it yourself if the request is done")
+    if not ws[f"{COL_COMPLETED}{row}"].value:
+        ws[f"{COL_COMPLETED}{row}"] = datetime.combine(m.received.date(), time())
+        changes.append("completed on")
+
+
 def _append_note(ws, row, ref, line, changes) -> bool:
     notes = ws[f"{COL_NOTES}{row}"].value or ""
     if ref in notes:
@@ -242,6 +282,7 @@ def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None, sent=
 
     wb = load_workbook(path)
     ws = wb[SHEET]
+    done_word = completed_status(wb)
     tbl, first, last = _table_bounds(ws)
     rows = _index(ws, first, last)
 
@@ -299,6 +340,7 @@ def upsert(path, accepted, backup_dir=None, dry_run=False, last_sent=None, sent=
         if an.summary():
             extra.append(an.summary())
         _advance_status(ws, row, kind, changes)
+        _complete(ws, row, an, m, done_word, changes, extra)
 
         # Notes: append-only, one line per email, tagged so re-runs can tell it's done.
         _append_note(ws, row, ref, note_line(m, ref, "; ".join(extra), kind), changes)
