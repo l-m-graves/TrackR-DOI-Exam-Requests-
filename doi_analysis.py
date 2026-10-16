@@ -182,10 +182,11 @@ def detect(m, approved_senders=()) -> Detection:
     if examiner_origin and doi_words:
         det.status, det.confidence = "accept", "high"
         det.reasons.insert(0, "examiner-originated request" + (" (forwarded)" if det.original_role in F.EXAMINER_SIDE and det.sender_role not in F.EXAMINER_SIDE else ""))
-    elif internal_sender and (doi_words or to_examiner):
+    elif internal_sender and (doi_words or to_examiner or (F.find_id(m.subject) and DELIVERED.search(segs[0].text))):
         det.status, det.confidence = "accept", "medium"
         det.reasons.insert(0, "internal request about a DOI exam item" if doi_words
-                           else "internal email to the examiner side about a request")
+                           else "internal email to the examiner side about a request" if to_examiner
+                           else "internal email saying a request's support was delivered")
     elif doi_words:
         det.status, det.confidence = "review", "low"
         det.reasons.insert(0, f"request ID and DOI wording, but sender not in the role settings: {m.sender}")
@@ -251,8 +252,10 @@ class Analysis:
     date_notes: list = field(default_factory=list)       # ASAP / several dates / unverified dates
     review: list = field(default_factory=list)           # reasons a person must look
     submission_status: str = ""                          # files ready | submitted
-    completes: bool = False                # an internal person told the examiner side it was delivered
-    partial_submission: bool = False       # ... but only part of it ("remaining items will follow")
+    completes: bool = False                # delivered by a SUBMITTER to the lead examiner -> Completed
+    submitted_only: bool = False           # delivery wording, but not (yet) from a submitter to the lead -> Submitted
+    not_complete_because: str = ""         # why it is Submitted rather than Completed
+    partial_submission: bool = False       # only part of it ("remaining items will follow")
     submission_evidence: str = ""          # the sentence that says so
     submitted_to: str = ""                 # the examiner-side recipients of that email
     send_to: str = ""                      # who the response goes to: 'Name <address>' (or a name not found)
@@ -319,27 +322,63 @@ DELIVERED = re.compile(
     r"\b(?:has|have|had)\s+(?:now\s+|just\s+|all\s+)?been\s+(?:uploaded|submitted|provided|sent|posted|shared|delivered|placed|saved|loaded)\b"
     r"|\b(?:I|we)(?:'ve|\s+have|\s+just)?\s+(?:uploaded|submitted|provided|sent|posted|shared|delivered)\b"
     r"|\buploaded\s+(?:to|on|in|into)\s+(?:the\s+|our\s+|your\s+)?(?:OneDrive|SharePoint|portal|site|folder|SFTP|Box|Teams)\b"
-    r"|\bplease\s+find\s+(?:attached|enclosed)\b|\battached\s+(?:is|are)\s+(?:the|our)\b", re.I)
+    r"|\bplease\s+find\s+(?:attached|enclosed)\b|\battached\s+(?:is|are)\s+(?:the|our)\b"
+    r"|\bcompleted\b|\bsubmitted\b|\buploaded\s+to\s+(?:the\s+)?OneDrive\b", re.I)
+# "will be submitted", "has not been completed", "once uploaded" - said about the future, not done
+NOT_YET = re.compile(r"\b(?:not|never)\s+(?:yet\s+)?(?:been\s+|be\s+)?(?:completed|submitted|uploaded|provided|sent)\b"
+                     r"|\b(?:will|to|should|must|can|could|would|need\s+to)\s+(?:be\s+|have\s+been\s+)?"
+                     r"(?:completed|submitted|uploaded|provided|sent)\b"
+                     r"|\b(?:once|when|until|before|after|if)\s+(?:it\s+is\s+|it's\s+|they\s+are\s+|we\s+have\s+)?"
+                     r"(?:completed|submitted|uploaded)\b|\bcompleted\?|\bsubmitted\?", re.I)
+FORWARD = re.compile(r"^\s*(?:fw|fwd)\s*:", re.I)
 PARTIAL = re.compile(r"\b(?:partial(?:ly)?|remaining|remainder|rest\s+of|still\s+(?:working|outstanding|need|pending|gathering)|"
                      r"(?:will|to)\s+follow|outstanding|part\s+of|portion\s+of|some\s+of|first\s+(?:batch|set|part)|"
                      r"not\s+yet|in\s+progress|by\s+(?:monday|tuesday|wednesday|thursday|friday|end\s+of))\b", re.I)
 
 
-def find_submission(m, segs, roles):
-    """(completes, partial, evidence, to): the CURRENT sender is inside the company, someone on the
-    examiner side is on To/CC, and the sender's own new words (not quoted history) say the support
-    was delivered. A department's 'uploaded to OneDrive' to an accountant is an internal handoff,
-    not a submission - so the examiner side has to be on the email."""
-    to_examiner = [a for a in list(m.to) + list(m.cc) if F.role_of(a) in F.EXAMINER_SIDE]
-    if roles[0] not in F.INTERNAL_SIDE or not to_examiner:
-        return False, False, "", ""
-    own = segs[0].text
-    hit = DELIVERED.search(own)
-    if not hit:
-        return False, False, "", ""
-    evidence = " ".join(own[max(0, own.rfind("\n", 0, hit.start()) + 1): (own.find("\n", hit.end()) + 1 or len(own))].split())[:200]
-    partial = bool(PARTIAL.search(own))
-    return (not partial), partial, evidence, "; ".join(_display(a, m) for a in to_examiner)
+def _sentence_around(text, start, end):
+    s = max(text.rfind("\n", 0, start), text.rfind(". ", 0, start)) + 1
+    ends = [i for i in (text.find("\n", end), text.find(". ", end)) if i != -1]
+    return " ".join(text[s: min(ends) + 1 if ends else len(text)].split())[:200]
+
+
+def find_submission(m, segs, roles) -> dict:
+    """Did someone inside the company say this request's support was delivered?
+      status 'completed'  - a SUBMITTER said so with a lead examiner on To/CC
+             'submitted'  - delivery wording from anyone else inside the company (or the lead
+                            examiner not on the email): Submitted, not Completed
+             'partial'    - only part of it ('the remaining items will follow')
+             ''           - nothing of the kind
+    Only that person's own new words count - never quoted history - and the subject must name
+    the request. You are an observer: being on To/CC makes you neither sender nor recipient.
+    For a forward (FW:), the forwarded original is judged as the real email."""
+    none = {"status": "", "evidence": "", "to": "", "why": ""}
+    if not F.find_id(m.subject):
+        return none
+    parts = [(m.sender, list(m.to) + list(m.cc), segs[0].text, roles[0])]
+    if FORWARD.match(m.subject or ""):
+        parts += [(s.author, s.recipients, s.text, r) for s, r in zip(segs[1:], roles[1:]) if s.author]
+    for author, recipients, text, role in parts:
+        if role not in F.INTERNAL_SIDE or author in F.MY_ADDRESSES:
+            continue
+        hit = DELIVERED.search(text)
+        if not hit:
+            continue
+        evidence = _sentence_around(text, hit.start(), hit.end())
+        if NOT_YET.search(evidence):
+            continue
+        if PARTIAL.search(text):
+            return {**none, "status": "partial", "evidence": evidence}
+        people = [a for a in recipients if a not in F.MY_ADDRESSES]
+        leads = [a for a in people if (a in F.LEAD_EXAMINERS if F.LEAD_EXAMINERS else F.role_of(a) in F.EXAMINER_SIDE)]
+        submitter = author in F.SUBMITTERS if F.SUBMITTERS else True
+        to = "; ".join(_display(a, m) for a in (leads or people))
+        if submitter and leads:
+            return {"status": "completed", "evidence": evidence, "to": to, "why": ""}
+        why = ("sent by someone who isn't a designated submitter" if not submitter
+               else "the lead examiner isn't on the email")
+        return {"status": "submitted", "evidence": evidence, "to": to, "why": why}
+    return none
 
 
 def find_send_to(m, segs, roles, trusted_docs=()):
@@ -490,7 +529,9 @@ def analyze(m, request_id, approved_senders=()) -> Analysis:
     for name in m.attachment_status:
         if "not read" in name:
             an.review.append(f"attachment {name}")
-    an.completes, an.partial_submission, an.submission_evidence, an.submitted_to = find_submission(m, segs, roles)
+    sub = find_submission(m, segs, roles)
+    an.completes, an.submitted_only, an.partial_submission = (sub["status"] == s for s in ("completed", "submitted", "partial"))
+    an.submission_evidence, an.submitted_to, an.not_complete_because = sub["evidence"], sub["to"], sub["why"]
     docs = [t for n, t in attachments if request_doc_trusted and F.important_attachments([n])]
     an.send_to, an.send_to_source = find_send_to(m, segs, roles, docs)
     if "address not on the email" in an.send_to:

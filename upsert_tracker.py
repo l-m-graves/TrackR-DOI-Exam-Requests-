@@ -235,12 +235,43 @@ def completed_status(wb) -> str:
     return "Completed"
 
 
+def submitted_status(wb, changes=None) -> str:
+    """'Submitted' as a Status choice. The template's list (Lists!A4:A12) doesn't have it, so it
+    is added in the first free row of that block - the help text further down is never touched."""
+    if "Lists" not in wb.sheetnames:
+        return "Submitted"
+    ls = wb["Lists"]
+    for r in range(4, 13):
+        v = ls[f"A{r}"].value
+        if v not in (None, "") and str(v).strip().lower() == "submitted":
+            return str(v).strip()
+    for r in range(4, 13):
+        if ls[f"A{r}"].value in (None, ""):
+            ls[f"A{r}"] = "Submitted"
+            if changes is not None:
+                changes.append("Status list + Submitted")
+            break
+    return "Submitted"
+
+
 def _complete(ws, row, an, m, done_word, changes, extra):
-    """An internal person told the examiner side the support was delivered: Status -> Completed
-    (from Not Started / In Progress / Awaiting Response only) and Completed On = that email's date,
-    only if empty. Partial delivery: In Progress and a note. On Hold or anything else a person
-    chose stays, with a note."""
+    """Delivery emails (doi_analysis.find_submission):
+      Completed - a designated submitter sent it with the lead examiner on To/CC: Status Completed
+                  and Completed On = that email's date (only if empty)
+      Submitted - delivery wording from anyone else inside the company: Status Submitted
+      partial   - In Progress and a note
+    Only from blank / Not Started / In Progress / Awaiting Response (Submitted may still become
+    Completed); never back down from Completed; On Hold or anything else a person chose stays."""
     cur = str(ws[f"{COL_STATUS}{row}"].value or "").strip()
+    if an.submitted_only:
+        word = submitted_status(ws.parent, changes)
+        extra.append(f"submitted ({an.submission_evidence}) - not Completed: {an.not_complete_because}")
+        if cur in COMPLETES_FROM:
+            ws[f"{COL_STATUS}{row}"] = word
+            changes.append(f"status {word}")
+        elif cur not in (word, done_word):
+            extra.append(f"status left '{cur}'")
+        return
     if an.partial_submission:
         extra.append(f"partial submission to the examiner - not complete: {an.submission_evidence}")
         if cur in ("", "Not Started"):
@@ -250,7 +281,7 @@ def _complete(ws, row, an, m, done_word, changes, extra):
     if not an.completes:
         return
     extra.append(f"submitted to {an.submitted_to}: {an.submission_evidence}")
-    if cur in COMPLETES_FROM:
+    if cur in COMPLETES_FROM or cur.lower() == "submitted":
         ws[f"{COL_STATUS}{row}"] = done_word
         changes.append(f"status {done_word} (submitted)")
     elif cur != done_word:

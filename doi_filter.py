@@ -52,6 +52,10 @@ INTERNAL_DOMAINS     = set()   # the company's own domain(s): any other employee
 THIRD_PARTY_FROM_THREAD = True
 THREAD_THIRD_PARTIES = set()   # filled each run from DOI_Contacts.csv - not a setting
 MY_ADDRESSES         = set()   # your own address(es); found in Outlook each run - set only if that fails
+# Who may COMPLETE a request: a submission email counts as Completed only when one of these sent it
+# and a lead examiner is on To/CC. Anyone else inside the company -> Submitted. Empty = any
+# internal sender writing to the examiner side completes it.
+SUBMITTERS           = set()
 ENTITY_NAMES         = ()      # legal-entity names to spot in request scope (optional)
 PRODUCT_NAMES        = ()      # product / line-of-business names to spot in scope (optional)
 
@@ -129,6 +133,7 @@ def _required(entry: str) -> str:
 
 MUST_BE_SENT_TO = {_required(a) for a in MUST_BE_SENT_TO if a and a.strip()}
 MY_ADDRESSES = {a.strip().lower() for a in MY_ADDRESSES if a and a.strip()}
+SUBMITTERS = {a.strip().lower() for a in SUBMITTERS if a and a.strip()}
 
 EXAMINER_SIDE = {"lead_examiner", "examiner", "third_party"}
 INTERNAL_SIDE = {"accountant", "internal"}

@@ -515,3 +515,121 @@ class SubmissionTrackerTests(unittest.TestCase):
         self.assertNotEqual(ws[f"I{r}"].value, "Completed")
         self.assertIsNone(ws[f"K{r}"].value)
         self.assertIn("partial submission", ws[f"O{r}"].value)
+
+
+class SubmitterRuleTests(unittest.TestCase):
+    """Submitted vs Completed: only a designated submitter writing to the lead examiner completes."""
+    LEAD = "lead.examiner@doi-state.test"
+    SUBMITTER = "sam.submitter@corp.test"
+    OTHER = "ana.accountant@corp.test"
+
+    def setUp(self):
+        roles = dict(E.ROLES, LEAD_EXAMINERS={self.LEAD}, MY_ADDRESSES={E.INTERN}, SUBMITTERS={self.SUBMITTER},
+                     ACCOUNTANT_CONTACTS={self.OTHER, self.SUBMITTER})
+        p = mock.patch.multiple(doi_filter, **roles)
+        p.start()
+        self.addCleanup(p.stop)
+
+    def analyze(self, sender, to, body="Hello Lee,\n\nFIN-1060 support has been uploaded to OneDrive.\n",
+                subject="RE: FIN-1060 Request - Claims", cc=(E.INTERN,)):
+        from doi_analysis import analyze
+        m = E.mail(subject, body, sender, to=to, cc=cc, received=datetime(2027, 10, 8, 16))
+        return analyze(m, "FIN-1060")
+
+    def test_submitter_to_the_lead_examiner_completes(self):
+        an = self.analyze(self.SUBMITTER, [self.LEAD])
+        self.assertTrue(an.completes)
+        self.assertFalse(an.submitted_only)
+
+    def test_anyone_else_inside_the_company_is_only_submitted(self):
+        an = self.analyze(self.OTHER, [self.LEAD])
+        self.assertTrue(an.submitted_only)
+        self.assertIn("designated submitter", an.not_complete_because)
+        an = self.analyze("pat.claims@corp.test", [self.OTHER], body="FIN-1060 items completed and uploaded to OneDrive.")
+        self.assertTrue(an.submitted_only)
+
+    def test_submitter_without_the_lead_examiner_is_only_submitted(self):
+        an = self.analyze(self.SUBMITTER, [self.OTHER])
+        self.assertTrue(an.submitted_only)
+        self.assertIn("lead examiner", an.not_complete_because)
+
+    def test_the_three_words(self):
+        for body in ("FIN-1060 support uploaded to OneDrive.", "FIN-1060 request completed.", "FIN-1060 responses submitted."):
+            self.assertTrue(self.analyze(self.SUBMITTER, [self.LEAD], body=body).completes, body)
+
+    def test_future_or_negative_wording_is_nothing(self):
+        for body in ("FIN-1060 support will be submitted Monday.", "FIN-1060 has not been completed yet.",
+                     "We will send it once it is completed.", "Has FIN-1060 been submitted?"):
+            an = self.analyze(self.SUBMITTER, [self.LEAD], body=body)
+            self.assertFalse(an.completes or an.submitted_only, body)
+
+    def test_subject_must_name_the_request(self):
+        an = self.analyze(self.SUBMITTER, [self.LEAD], subject="Weekly update")
+        self.assertFalse(an.completes or an.submitted_only)
+
+    def test_forward_to_you_is_judged_on_the_original(self):
+        body = ("FYI\n\nFrom: Sam Submitter <sam.submitter@corp.test>\nSent: Friday, October 8, 2027 4:00 PM\n"
+                "To: Lee Examiner <lead.examiner@doi-state.test>\nSubject: RE: FIN-1060 Request - Claims\n\n"
+                "Hello Lee,\n\nFIN-1060 support has been uploaded to OneDrive.\n")
+        an = self.analyze(self.OTHER, [E.INTERN], body=body, subject="FW: FIN-1060 Request - Claims", cc=())
+        self.assertTrue(an.completes)
+
+    def test_a_reply_quoting_an_old_submission_is_not_a_new_one(self):
+        body = ("Thanks!\n\nFrom: Sam Submitter <sam.submitter@corp.test>\nSent: Friday\n"
+                "To: Lee Examiner <lead.examiner@doi-state.test>\nSubject: RE: FIN-1060\n\nFIN-1060 support has been uploaded.\n")
+        an = self.analyze(self.LEAD, [self.SUBMITTER], body=body)
+        self.assertFalse(an.completes or an.submitted_only)
+
+    def test_you_are_never_the_sender_or_the_recipient(self):
+        an = self.analyze(E.INTERN, [self.LEAD])
+        self.assertFalse(an.completes or an.submitted_only)
+
+    def test_internal_delivery_email_is_accepted_without_doi_wording(self):
+        m = E.mail("RE: FIN-1060 Request - Claims", "FIN-1060 support uploaded to OneDrive.", "pat.claims@corp.test",
+                   to=[self.OTHER], cc=[E.INTERN])
+        self.assertEqual(detect(m).status, "accept")
+
+
+@unittest.skipUnless(FIXTURE_PATH.exists(), "needs a fake-data tracker (DOI_TRACKER_FIXTURE)")
+class SubmitterTrackerTests(unittest.TestCase):
+    LEAD, SUBMITTER, OTHER = SubmitterRuleTests.LEAD, SubmitterRuleTests.SUBMITTER, SubmitterRuleTests.OTHER
+
+    def setUp(self):
+        roles = dict(E.ROLES, LEAD_EXAMINERS={self.LEAD}, MY_ADDRESSES={E.INTERN}, SUBMITTERS={self.SUBMITTER},
+                     ACCOUNTANT_CONTACTS={self.OTHER, self.SUBMITTER})
+        p = mock.patch.multiple(doi_filter, **roles)
+        p.start()
+        self.addCleanup(p.stop)
+        d = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, d)
+        self.path = d / "Tracker.xlsx"
+        shutil.copy(FIXTURE_PATH, self.path)
+
+    def upsert(self, m):
+        from upsert_tracker import upsert
+        return upsert(self.path, [(m, "FIN-1060")], backup_dir=self.path.parent / "Backups")
+
+    def mail(self, sender, to, eid, day, subject="RE: FIN-1060 Request - Claims",
+             body="Hello Lee,\n\nFIN-1060 support has been uploaded to OneDrive.\n"):
+        return E.mail(subject, body, sender, to=to, cc=[E.INTERN], eid=eid, received=datetime(2027, 10, day, 10))
+
+    def cells(self, acts):
+        from openpyxl import load_workbook
+        wb = load_workbook(self.path)
+        r = acts[0]["row"]
+        return wb["DOI Exam Tracker"], r, [wb["Lists"][f"A{i}"].value for i in range(4, 13)]
+
+    def test_submitted_then_completed(self):
+        self.upsert(self.mail(self.LEAD, [self.OTHER], "R1", 4, subject="FIN-1060 Request - Claims",
+                              body="Please provide the DOI examination claims listing by 10/20/27."))
+        ws, r, statuses = self.cells(self.upsert(self.mail(self.OTHER, [self.LEAD], "S1", 7)))
+        self.assertEqual(ws[f"I{r}"].value, "Submitted")
+        self.assertIsNone(ws[f"K{r}"].value)
+        self.assertIn("Submitted", statuses)                                  # added to the dropdown list
+        self.assertIn("not Completed", ws[f"O{r}"].value)
+        ws, r, statuses = self.cells(self.upsert(self.mail(self.SUBMITTER, [self.LEAD], "S2", 8)))
+        self.assertEqual(ws[f"I{r}"].value, "Completed")
+        self.assertEqual(ws[f"K{r}"].value, datetime(2027, 10, 8))
+        self.assertEqual(statuses.count("Submitted"), 1)
+        ws, r, _ = self.cells(self.upsert(self.mail(self.OTHER, [self.LEAD], "S3", 9)))
+        self.assertEqual(ws[f"I{r}"].value, "Completed")                     # never back down to Submitted

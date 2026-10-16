@@ -39,6 +39,9 @@ THIRD_PARTY_DOMAINS  = {"<exam firm domain>"}       # e.g. the firm(s) the DOI u
 ACCOUNTANT_CONTACTS  = {"<accountant address>"}     # internal accountants coordinating requests - fill this in:
                                                     # they are never put in the Contact column
 # MY_ADDRESSES = {"<your address>"}                 # only if Outlook can't tell the program who you are
+# Who may COMPLETE a request: their "uploaded to OneDrive / completed / submitted" email with a lead
+# examiner on To/CC -> Completed + Completed On. Anyone else inside the company -> Submitted.
+# SUBMITTERS = {"<submitter address>", "<submitter address>"}
 INTERNAL_DOMAINS     = {"<company domain>"}         # any other employee
 # ENTITY_NAMES  = ("<legal entity name>",)          # optional: spotted in request scope
 # PRODUCT_NAMES = ("<product name>",)
