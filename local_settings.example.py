@@ -26,7 +26,7 @@ PUBLISH_PATH = r"C:\Users\<you>\<Company>\<Shared folder>\DOI_Exam_Tracker_View_
 # These decide how an email is judged (accept / review / reject) and whose dates are deadlines:
 # a date from the examiner side is the exam due date; a date from an internal person is only an
 # internal expected date. Leave a set empty if you have nobody in that group.
-LEAD_EXAMINERS       = {"<lead examiner address>"}
+LEAD_EXAMINERS       = {"<lead examiner address>"}  # also the default Send To
 EXAMINER_CONTACTS    = set()                        # other examiner addresses
 EXAMINER_DOMAINS     = {"<regulator domain>"}
 THIRD_PARTY_CONTACTS = set()                        # examination-firm people working for the DOI
@@ -55,6 +55,8 @@ SENDER_DOMAINS  = {"<real DOI domain>"}
 # REQUEST_ID_PATTERN = r"\b(?:FIN|IT|ABC|DOI-[A-Z]+)-\d+\b"
 # REQUEST_ID_PATTERN = r"\b(?:FIN|IT)[ -]?\d+\b|\bDOI-[A-Z0-9]+-\d+\b"
 # SUBJECT_LIKES      = ("%FIN-%", "%IT-%", "%ABC-%", "%DOI-%")
-# Optional. Applies to EXTERNAL emails only (examiner / exam firm / unknown senders): they must have
-# this address on To or CC, else rejected. Internal forwards and replies are never held to it.
+# Optional filter. Applies to EXTERNAL emails only (examiner / exam firm / unknown senders): they must
+# have this on To or CC, else rejected - a full address (that mailbox) or "@domain" (anyone there).
+# Internal forwards and replies are never held to it. NOT who responses go to - that is "Send To",
+# read from the examiner's own words ("please send to Jordan by ...") or else LEAD_EXAMINERS.
 # MUST_BE_SENT_TO = {"<team mailbox every external request email reaches>"}
